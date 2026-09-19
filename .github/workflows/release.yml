@@ -1,8 +1,8 @@
-name: Build & Release
+name: Full Build & Release
 
 # 触发方式：
-#   1) 打 tag（推荐）:  git tag v1.0 && git push origin v1.0
-#   2) 手动触发:        Actions 页面 -> Run workflow
+#   1) 打 tag（发布版）:  git tag v1.0 && git push origin v1.0
+#   2) 手动触发:          Actions 页面 -> Run workflow
 on:
   push:
     tags: ["v*"]
@@ -11,67 +11,55 @@ on:
 permissions:
   contents: write
 
+env:
+  # 官方最新 s905l3a 镜像（ophub/fnnas）。若官方发布新内核，更新此 URL。
+  BASE_IMG_URL: "https://github.com/ophub/fnnas/releases/download/fnnas_amlogic_1252/fnnas_amlogic_s905l3a_k6.18.18_2026.06.25.img.gz"
+  PROD_DTB: "dtb-variants/v8b-uwe5621ds-3.97g-ddr52.dtb"
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # ---------- 1. 验证/生成 dtb ----------
-      - name: Install device-tree compiler
+      - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y device-tree-compiler
+          sudo apt-get install -y gzip util-linux dosfstools zip
 
-      # 生产版 dtb = v8b (4G + WiFi + eMMC DDR52)
-      - name: Prepare production dtb
+      # ---------- 完整构建：官方镜像 + 生产 dtb ----------
+      - name: Build full .img (inject production dtb)
         run: |
-          set -e
-          mkdir -p dist/dtb/amlogic
-          cp dtb-variants/v8b-uwe5621ds-3.97g-ddr52.dtb dist/dtb/amlogic/meson-g12a-s905l3a-e900v22c.dtb
-          cp dtb-variants/v8b-uwe5621ds-3.97g-ddr52.dtb dist/dtb/amlogic/meson-g12a-s905l3a-e900v22c-4g-wifi.dtb
-          # 附全部变体供选择
-          cp dtb-variants/*.dtb dist/dtb/
-          # 校验 bytecode 可反编译（防坏 dtb）
-          dtc -I dtb -O dts dist/dtb/amlogic/meson-g12a-s905l3a-e900v22c.dtb >/dev/null
-          echo "dtb OK"
+          sudo bash scripts/build_full_img.sh \
+            "$BASE_IMG_URL" \
+            "$PROD_DTB" \
+            out/release
 
-      # ---------- 2. WiFi 驱动 + 固件 + 补丁 ----------
-      - name: Collect WiFi assets
+      # ---------- 同时附加 dtb 合集 zip ----------
+      - name: Package dtb collection
         run: |
-          mkdir -p dist/wifi/drivers dist/wifi/firmware
-          cp wifi-fix/uwe5621_bsp_sdio.ko  dist/wifi/drivers/
-          cp wifi-fix/sprdwl_ng.ko         dist/wifi/drivers/
-          cp wifi-fix/sprdwl-devaddr-fix.patch dist/wifi/
-          cp wifi-fix/sprdwl-connleak-fix.patch dist/wifi/
-          # 固件
-          cp wifi-fix/firmware/* dist/wifi/firmware/ 2>/dev/null || echo "firmware dir missing, continuing"
+          cd "$GITHUB_WORKSPACE"
+          # 生产版规范名（整盘 /dtb/amlogic 同名文件，免改 uEnv）
+          mkdir -p out/release/dtb-all/dtb/amlogic
+          cp "out/release/fnnas_amlogic_s905l3a_e900v22c"*/meson-g12a-s905l3a-e900v22c.dtb 2>/dev/null || true
+          cp "${PROD_DTB}" out/release/dtb-all/dtb/amlogic/meson-g12a-s905l3a-e900v22c.dtb
+          # 全部变体
+          cp dtb-variants/*.dtb out/release/dtb-all/ 2>/dev/null || true
+          # 最小烧录包
+          cp out/fnnas-e900v22c-minbootloader.img out/release/ 2>/dev/null || true
+          cd out/release
+          zip -r ../../dtb-collection.zip dtb-all >/dev/null
+          echo "--- release 目录 ---" && ls -lh
+          echo "--- 上传资产 ---" && ls -lh ./*.img.gz meson-g12a-s905l3a-e900v22c.dtb fnnas-e900v22c-minbootloader.img 2>/dev/null; ls -lh ../../dtb-collection.zip
 
-      # ---------- 3. Bootloader 最小包 + 部署脚本 ----------
-      - name: Collect bootloader & deploy
-        run: |
-          cp out/fnnas-e900v22c-minbootloader.img dist/ 2>/dev/null || echo "minbootloader missing"
-          cp -r 写入U盘 dist/deploy-scripts 2>/dev/null || cp -r "写入U盘" dist/deploy-scripts 2>/dev/null || echo "no deploy dir"
-          cp out/uEnv.txt dist/dtb/ 2>/dev/null || true
-
-      # ---------- 4. 打 zip ----------
-      - name: Package release assets
-        id: package
-        run: |
-          set -e
-          cd dist
-          zip -r ../../dtb-wifi-bootloader-collection.zip . >/dev/null
-          cd ..
-          # 仅 bootloader 最小包单独发
-          cp out/fnnas-e900v22c-minbootloader.img fnnas-e900v22c-minbootloader.img 2>/dev/null || true
-          ls -lh *.zip *.img
-
-      # ---------- 5. 发布到 GitHub Release ----------
+      # ---------- 发布到 GitHub Release ----------
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            dtb-wifi-bootloader-collection.zip
-            fnnas-e900v22c-minbootloader.img
+            out/release/*.img.gz
+            out/release/meson-g12a-s905l3a-e900v22c.dtb
+            out/release/fnnas-e900v22c-minbootloader.img
+            dtb-collection.zip
           generate_release_notes: true
