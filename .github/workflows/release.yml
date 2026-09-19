@@ -34,6 +34,8 @@ jobs:
             "$BASE_IMG_URL" \
             "$PROD_DTB" \
             out/release
+          # 脚本内 sudo 创建的产物 owner 为 root，归还给当前用户，供后续步骤写
+          sudo chown -R "$(id -u):$(id -g)" out/release
 
       # ---------- 同时附加 dtb 合集 zip ----------
       - name: Package dtb collection
@@ -41,7 +43,6 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           # 生产版规范名（整盘 /dtb/amlogic 同名文件，免改 uEnv）
           mkdir -p out/release/dtb-all/dtb/amlogic
-          cp "out/release/fnnas_amlogic_s905l3a_e900v22c"*/meson-g12a-s905l3a-e900v22c.dtb 2>/dev/null || true
           cp "${PROD_DTB}" out/release/dtb-all/dtb/amlogic/meson-g12a-s905l3a-e900v22c.dtb
           # 全部变体
           cp dtb-variants/*.dtb out/release/dtb-all/ 2>/dev/null || true
