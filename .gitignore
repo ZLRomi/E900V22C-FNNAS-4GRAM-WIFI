@@ -1,0 +1,26 @@
+# ---- 敏感信息：远程调试/实验脚本（含 sshpass 密码 / 内网 IP）----
+# 仅保留干净的 work/*.py 工具与复现构建脚本
+work/*.sh
+work/*.log
+work/__pycache__/
+work/*.orig.dtb
+work/*.dts
+
+# ---- 大型/内部目录（不纳入仓库）----
+# Tries tar / 系统备份 / 仓库克隆
+backup/
+parts/
+src/
+drvsrc/
+sdcard/
+kryptonlee/
+
+# ---- 中间产物与缓存 ----
+*.log
+*.bak
+*.orig
+*__pycache__/
+
+# ---- 系统/工具生成 ----
+.DS_Store
+Thumbs.db

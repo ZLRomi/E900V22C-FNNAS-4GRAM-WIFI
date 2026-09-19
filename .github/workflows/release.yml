@@ -1,0 +1,77 @@
+name: Build & Release
+
+# 触发方式：
+#   1) 打 tag（推荐）:  git tag v1.0 && git push origin v1.0
+#   2) 手动触发:        Actions 页面 -> Run workflow
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---------- 1. 验证/生成 dtb ----------
+      - name: Install device-tree compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y device-tree-compiler
+
+      # 生产版 dtb = v8b (4G + WiFi + eMMC DDR52)
+      - name: Prepare production dtb
+        run: |
+          set -e
+          mkdir -p dist/dtb/amlogic
+          cp dtb-variants/v8b-uwe5621ds-3.97g-ddr52.dtb dist/dtb/amlogic/meson-g12a-s905l3a-e900v22c.dtb
+          cp dtb-variants/v8b-uwe5621ds-3.97g-ddr52.dtb dist/dtb/amlogic/meson-g12a-s905l3a-e900v22c-4g-wifi.dtb
+          # 附全部变体供选择
+          cp dtb-variants/*.dtb dist/dtb/
+          # 校验 bytecode 可反编译（防坏 dtb）
+          dtc -I dtb -O dts dist/dtb/amlogic/meson-g12a-s905l3a-e900v22c.dtb >/dev/null
+          echo "dtb OK"
+
+      # ---------- 2. WiFi 驱动 + 固件 + 补丁 ----------
+      - name: Collect WiFi assets
+        run: |
+          mkdir -p dist/wifi/drivers dist/wifi/firmware
+          cp wifi-fix/uwe5621_bsp_sdio.ko  dist/wifi/drivers/
+          cp wifi-fix/sprdwl_ng.ko         dist/wifi/drivers/
+          cp wifi-fix/sprdwl-devaddr-fix.patch dist/wifi/
+          cp wifi-fix/sprdwl-connleak-fix.patch dist/wifi/
+          # 固件
+          cp wifi-fix/firmware/* dist/wifi/firmware/ 2>/dev/null || echo "firmware dir missing, continuing"
+
+      # ---------- 3. Bootloader 最小包 + 部署脚本 ----------
+      - name: Collect bootloader & deploy
+        run: |
+          cp out/fnnas-e900v22c-minbootloader.img dist/ 2>/dev/null || echo "minbootloader missing"
+          cp -r 写入U盘 dist/deploy-scripts 2>/dev/null || cp -r "写入U盘" dist/deploy-scripts 2>/dev/null || echo "no deploy dir"
+          cp out/uEnv.txt dist/dtb/ 2>/dev/null || true
+
+      # ---------- 4. 打 zip ----------
+      - name: Package release assets
+        id: package
+        run: |
+          set -e
+          cd dist
+          zip -r ../../dtb-wifi-bootloader-collection.zip . >/dev/null
+          cd ..
+          # 仅 bootloader 最小包单独发
+          cp out/fnnas-e900v22c-minbootloader.img fnnas-e900v22c-minbootloader.img 2>/dev/null || true
+          ls -lh *.zip *.img
+
+      # ---------- 5. 发布到 GitHub Release ----------
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            dtb-wifi-bootloader-collection.zip
+            fnnas-e900v22c-minbootloader.img
+          generate_release_notes: true

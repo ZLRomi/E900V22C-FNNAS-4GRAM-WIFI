@@ -1,0 +1,132 @@
+--- cfg80211.c.orig	2026-09-19 13:03:13.559521700 +0800
++++ cfg80211.c.patched	2026-09-19 13:03:12.757099400 +0800
+@@ -1998,6 +1998,8 @@
+ 		strncpy(con.ssid, sme->ssid, sme->ssid_len);
+ 		con.ssid_len = sme->ssid_len;
+ 		vif->sm_state = SPRDWL_CONNECTING;
++		/* [FnNAS-FIX] from here cfg80211 waits for exactly one result */
++		vif->fnnas_conn_pending = true;
+ 
+ 		if (vif->wps_flag) {
+ 			if (strstr(con.ssid, "Marvell") || strstr(con.ssid, "Ralink")) {
+@@ -2019,6 +2021,7 @@
+ err:
+ 	wl_ndev_log(L_ERR, ndev, "%s failed\n", __func__);
+ 	vif->sm_state = old_state;
++	vif->fnnas_conn_pending = false;	/* [FnNAS-FIX] cfg80211 got the error directly */
+ #ifdef STA_SOFTAP_SCC_MODE
+ 	intf->sta_home_channel = 0;
+ #endif
+@@ -2294,7 +2297,23 @@
+ 
+ 	if (vif->sm_state != SPRDWL_CONNECTING &&
+ 		vif->sm_state != SPRDWL_CONNECTED) {
+-		wl_ndev_log(L_ERR, vif->ndev, "%s Unexpected event!\n", __func__);
++		wl_ndev_log(L_ERR, vif->ndev,
++			"%s Unexpected event (sm_state=%d, pending=%d)!\n",
++			__func__, vif->sm_state, vif->fnnas_conn_pending);
++		/* [FnNAS-FIX] Never leave cfg80211 waiting: dropping the event
++		 * here leaks wdev->conn, after which every connect returns
++		 * -EALREADY (wpa_supplicant: "Association request to the
++		 * driver failed" / user-visible "password error"). */
++		if (vif->fnnas_conn_pending) {
++			vif->fnnas_conn_pending = false;
++			vif->sm_state = SPRDWL_DISCONNECTED;
++			cfg80211_connect_result(vif->ndev, vif->bssid, NULL, 0,
++				NULL, 0,
++				WLAN_STATUS_UNSPECIFIED_FAILURE,
++				GFP_KERNEL);
++			memset(vif->bssid, 0, sizeof(vif->bssid));
++			memset(vif->ssid, 0, sizeof(vif->ssid));
++		}
+ 		return;
+ 	}
+ #ifndef IBSS_SUPPORT
+@@ -2383,11 +2402,13 @@
+ 	}
+ 
+ 	if (vif->sm_state == SPRDWL_CONNECTING &&
+-		conn_info->status == SPRDWL_CONNECT_SUCCESS)
++		conn_info->status == SPRDWL_CONNECT_SUCCESS) {
++		vif->fnnas_conn_pending = false;
+ 		cfg80211_connect_result(vif->ndev,
+ 					conn_info->bssid, conn_info->req_ie, conn_info->req_ie_len,
+ 					conn_info->resp_ie, conn_info->resp_ie_len,
+ 					WLAN_STATUS_SUCCESS, GFP_KERNEL);
++	}
+ 	else if (vif->sm_state == SPRDWL_CONNECTED &&
+ 		 conn_info->status == SPRDWL_ROAM_SUCCESS){
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
+@@ -2467,9 +2488,16 @@
+ #endif
+ 	if (status_code == WLAN_STATUS_SUCCESS)
+ 		status_code = WLAN_STATUS_UNSPECIFIED_FAILURE;
+-	if (vif->sm_state == SPRDWL_CONNECTING)
++	/* [FnNAS-FIX] report whenever cfg80211 is still waiting, not only
++	 * in the CONNECTING state (a failed roam or a late event was
++	 * silently dropped before) */
++	if (vif->sm_state == SPRDWL_CONNECTING ||
++		vif->fnnas_conn_pending) {
++		vif->fnnas_conn_pending = false;
++		vif->sm_state = SPRDWL_DISCONNECTED;
+ 		cfg80211_connect_result(vif->ndev, vif->bssid, NULL, 0, NULL, 0,
+ 					status_code, GFP_KERNEL);
++	}
+ 
+ 	wl_ndev_log(L_ERR, vif->ndev, "%s %s failed status code:%d!\n",
+ 				__func__, vif->ssid, status_code);
+@@ -2479,7 +2507,15 @@
+ 
+ void sprdwl_report_disconnection(struct sprdwl_vif *vif, u16 reason_code)
+ {
+-	if (vif->sm_state == SPRDWL_CONNECTING) {
++	if (vif->fnnas_conn_pending) {
++		/* [FnNAS-FIX] connect still pending: cfg80211 must be told or
++		 * wdev->conn leaks and every later connect gets -EALREADY */
++		vif->fnnas_conn_pending = false;
++		vif->sm_state = SPRDWL_DISCONNECTED;
++		cfg80211_connect_result(vif->ndev, vif->bssid, NULL, 0, NULL, 0,
++					WLAN_STATUS_UNSPECIFIED_FAILURE,
++					GFP_KERNEL);
++	} else if (vif->sm_state == SPRDWL_CONNECTING) {
+ 		cfg80211_connect_result(vif->ndev, vif->bssid, NULL, 0, NULL, 0,
+ 					WLAN_STATUS_UNSPECIFIED_FAILURE,
+ 					GFP_KERNEL);
+--- sprdwl.h.orig	2026-09-19 13:03:15.020294300 +0800
++++ sprdwl.h.patched	2026-09-19 13:03:14.232062300 +0800
+@@ -111,6 +111,7 @@
+ 	u8 bssid[ETH_ALEN];
+ 	unsigned char beacon_loss;
+ 	bool local_mac_flag;
++	bool fnnas_conn_pending;	/* [FnNAS-FIX] cfg80211 owes a connect result */
+ 
+ 	/* encryption stuff */
+ 	u8 prwise_crypto;
+--- main.c.orig1	2026-09-19 13:03:12.048290600 +0800
++++ main.c.patched	2026-09-19 13:03:11.345689800 +0800
+@@ -944,12 +944,23 @@
+ 		if (!is_zero_ether_addr(sa->sa_data)) {
+ 			vif->has_rand_mac = true;
+ 			memcpy(vif->random_mac, sa->sa_data, ETH_ALEN);
+-			memcpy(dev->dev_addr, sa->sa_data, ETH_ALEN);
++			/* [FnNAS-FIX 1] kernel >= 6.11: dev_addr is a const ptr tracked
++			 * by dev_addr_shadow; a raw memcpy desyncs them and
++			 * dev_addr_check() then makes __dev_open() fail (-EINVAL),
++			 * leaving the interface permanently DOWN. */
++			dev->addr_len = ETH_ALEN;
++			eth_hw_addr_set(dev, sa->sa_data);
+ 		} else {
+ 			vif->has_rand_mac = false;
+ 			netdev_info(dev, "need clear random mac for sta/softap mode\n");
+ 			memset(vif->random_mac, 0, ETH_ALEN);
+-			memcpy(dev->dev_addr, vif->mac, ETH_ALEN);
++			/* [FnNAS-FIX 2] same as above; also vif->mac is never
++			 * filled in, use the firmware-reported MAC instead. */
++			dev->addr_len = ETH_ALEN;
++			if (is_valid_ether_addr(vif->mac))
++				eth_hw_addr_set(dev, vif->mac);
++			else if (is_valid_ether_addr(vif->priv->mac_addr))
++				eth_hw_addr_set(dev, vif->priv->mac_addr);
+ 		}
+ 	}
+ 	/*return success to pass vts test*/

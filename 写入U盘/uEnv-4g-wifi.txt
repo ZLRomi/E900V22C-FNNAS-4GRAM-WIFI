@@ -1,0 +1,4 @@
+LINUX=/zImage
+INITRD=/uInitrd
+FDT=/dtb/amlogic/meson-g12a-s905l3a-e900v22c-4g-wifi.dtb
+APPEND=root=UUID=2c3ab232-463c-4079-a3ce-667ce47ef354 rootflags=compress=zstd:1 rw rootwait rootfstype=btrfs console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 max_loop=128 cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory swapaccount=1 video=HDMI-A-1:1920x1080@60e plymouth.enable=0

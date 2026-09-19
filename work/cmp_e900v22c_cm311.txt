@@ -1,0 +1,1197 @@
+7,8c7,8
+< 	compatible = "skyworth,e900v22c", "amlogic,g12a";
+< 	model = "SKYWORTH E900V22C";
+---
+> 	compatible = "cm311,m401a,e900v22c", "amlogic,g12a";
+> 	model = "CM311-1a-YST";
+15a16
+> 		serial1 = "/soc/bus@ffd00000/serial@24000";
+30c31
+< 			phandle = <0x73>;
+---
+> 			phandle = <0x76>;
+39c40
+< 			phandle = <0x74>;
+---
+> 			phandle = <0x77>;
+50c51
+< 		phandle = <0x75>;
+---
+> 		phandle = <0x78>;
+55c56
+< 		phandle = <0x3d>;
+---
+> 		phandle = <0x40>;
+106c107
+< 			phandle = <0x76>;
+---
+> 			phandle = <0x79>;
+112c113
+< 			phandle = <0x77>;
+---
+> 			phandle = <0x7a>;
+156c157
+< 			phandle = <0x78>;
+---
+> 			phandle = <0x7b>;
+172c173
+< 			phandle = <0x79>;
+---
+> 			phandle = <0x7c>;
+188c189
+< 			phandle = <0x7a>;
+---
+> 			phandle = <0x7d>;
+213c214
+< 					phandle = <0x7b>;
+---
+> 					phandle = <0x7e>;
+223c224
+< 					phandle = <0x7c>;
+---
+> 					phandle = <0x7f>;
+227c228
+< 						phandle = <0x55>;
+---
+> 						phandle = <0x58>;
+238c239
+< 				phandle = <0x7d>;
+---
+> 				phandle = <0x80>;
+245c246
+< 					phandle = <0x7e>;
+---
+> 					phandle = <0x81>;
+259c260
+< 				phandle = <0x6e>;
+---
+> 				phandle = <0x71>;
+268c269
+< 				phandle = <0x7f>;
+---
+> 				phandle = <0x82>;
+283c284
+< 						phandle = <0x32>;
+---
+> 						phandle = <0x35>;
+307c308
+< 						phandle = <0x33>;
+---
+> 						phandle = <0x36>;
+325c326
+< 						phandle = <0x80>;
+---
+> 						phandle = <0x83>;
+336c337
+< 						phandle = <0x34>;
+---
+> 						phandle = <0x37>;
+347c348
+< 						phandle = <0x35>;
+---
+> 						phandle = <0x38>;
+358c359
+< 						phandle = <0x36>;
+---
+> 						phandle = <0x39>;
+390c391
+< 						phandle = <0x81>;
+---
+> 						phandle = <0x84>;
+401c402
+< 						phandle = <0x82>;
+---
+> 						phandle = <0x85>;
+412c413
+< 						phandle = <0x2a>;
+---
+> 						phandle = <0x2b>;
+423c424
+< 						phandle = <0x2b>;
+---
+> 						phandle = <0x2c>;
+434c435
+< 						phandle = <0x83>;
+---
+> 						phandle = <0x86>;
+445c446
+< 						phandle = <0x84>;
+---
+> 						phandle = <0x87>;
+456c457
+< 						phandle = <0x85>;
+---
+> 						phandle = <0x88>;
+467c468
+< 						phandle = <0x86>;
+---
+> 						phandle = <0x89>;
+478c479
+< 						phandle = <0x87>;
+---
+> 						phandle = <0x8a>;
+489c490
+< 						phandle = <0x88>;
+---
+> 						phandle = <0x8b>;
+500c501
+< 						phandle = <0x89>;
+---
+> 						phandle = <0x8c>;
+511c512
+< 						phandle = <0x8a>;
+---
+> 						phandle = <0x8d>;
+522c523
+< 						phandle = <0x8b>;
+---
+> 						phandle = <0x8e>;
+533c534
+< 						phandle = <0x8c>;
+---
+> 						phandle = <0x8f>;
+544c545
+< 						phandle = <0x28>;
+---
+> 						phandle = <0x29>;
+555c556
+< 						phandle = <0x29>;
+---
+> 						phandle = <0x2a>;
+566c567
+< 						phandle = <0x8d>;
+---
+> 						phandle = <0x90>;
+577c578
+< 						phandle = <0x8e>;
+---
+> 						phandle = <0x91>;
+588c589
+< 						phandle = <0x26>;
+---
+> 						phandle = <0x27>;
+599c600
+< 						phandle = <0x27>;
+---
+> 						phandle = <0x28>;
+610c611
+< 						phandle = <0x4c>;
+---
+> 						phandle = <0x4f>;
+621c622
+< 						phandle = <0x8f>;
+---
+> 						phandle = <0x92>;
+632c633
+< 						phandle = <0x90>;
+---
+> 						phandle = <0x93>;
+643c644
+< 						phandle = <0x91>;
+---
+> 						phandle = <0x94>;
+654c655
+< 						phandle = <0x92>;
+---
+> 						phandle = <0x95>;
+664c665
+< 						phandle = <0x93>;
+---
+> 						phandle = <0x96>;
+674c675
+< 						phandle = <0x94>;
+---
+> 						phandle = <0x97>;
+684c685
+< 						phandle = <0x95>;
+---
+> 						phandle = <0x98>;
+694c695
+< 						phandle = <0x96>;
+---
+> 						phandle = <0x99>;
+704c705
+< 						phandle = <0x97>;
+---
+> 						phandle = <0x9a>;
+714c715
+< 						phandle = <0x98>;
+---
+> 						phandle = <0x9b>;
+724c725
+< 						phandle = <0x99>;
+---
+> 						phandle = <0x9c>;
+734c735
+< 						phandle = <0x9a>;
+---
+> 						phandle = <0x9d>;
+744c745
+< 						phandle = <0x9b>;
+---
+> 						phandle = <0x9e>;
+754c755
+< 						phandle = <0x9c>;
+---
+> 						phandle = <0x9f>;
+764c765
+< 						phandle = <0x9d>;
+---
+> 						phandle = <0xa0>;
+774c775
+< 						phandle = <0x9e>;
+---
+> 						phandle = <0xa1>;
+784c785
+< 						phandle = <0x9f>;
+---
+> 						phandle = <0xa2>;
+794c795
+< 						phandle = <0xa0>;
+---
+> 						phandle = <0xa3>;
+804c805
+< 						phandle = <0xa1>;
+---
+> 						phandle = <0xa4>;
+814c815
+< 						phandle = <0xa2>;
+---
+> 						phandle = <0xa5>;
+824c825
+< 						phandle = <0xa3>;
+---
+> 						phandle = <0xa6>;
+835c836
+< 						phandle = <0xa4>;
+---
+> 						phandle = <0xa7>;
+846c847
+< 						phandle = <0xa5>;
+---
+> 						phandle = <0xa8>;
+857c858
+< 						phandle = <0xa6>;
+---
+> 						phandle = <0xa9>;
+868c869
+< 						phandle = <0xa7>;
+---
+> 						phandle = <0xaa>;
+878c879
+< 						phandle = <0xa8>;
+---
+> 						phandle = <0xab>;
+888c889
+< 						phandle = <0xa9>;
+---
+> 						phandle = <0xac>;
+898c899
+< 						phandle = <0xaa>;
+---
+> 						phandle = <0xad>;
+908c909
+< 						phandle = <0xab>;
+---
+> 						phandle = <0xae>;
+918c919
+< 						phandle = <0xac>;
+---
+> 						phandle = <0xaf>;
+928c929
+< 						phandle = <0xad>;
+---
+> 						phandle = <0xb0>;
+938c939
+< 						phandle = <0xae>;
+---
+> 						phandle = <0xb1>;
+948c949
+< 						phandle = <0xaf>;
+---
+> 						phandle = <0x26>;
+958c959
+< 						phandle = <0xb0>;
+---
+> 						phandle = <0xb2>;
+968c969
+< 						phandle = <0xb1>;
+---
+> 						phandle = <0xb3>;
+978c979
+< 						phandle = <0xb2>;
+---
+> 						phandle = <0xb4>;
+988c989
+< 						phandle = <0xb3>;
+---
+> 						phandle = <0xb5>;
+998c999
+< 						phandle = <0x30>;
+---
+> 						phandle = <0x33>;
+1016c1017
+< 						phandle = <0x31>;
+---
+> 						phandle = <0x34>;
+1027c1028
+< 						phandle = <0xb4>;
+---
+> 						phandle = <0xb6>;
+1045c1046
+< 						phandle = <0xb5>;
+---
+> 						phandle = <0xb7>;
+1056c1057
+< 						phandle = <0x2c>;
+---
+> 						phandle = <0x2f>;
+1067c1068
+< 						phandle = <0x2d>;
+---
+> 						phandle = <0x30>;
+1078c1079
+< 						phandle = <0xb6>;
+---
+> 						phandle = <0xb8>;
+1088c1089
+< 						phandle = <0xb7>;
+---
+> 						phandle = <0xb9>;
+1108c1109
+< 						phandle = <0xb8>;
+---
+> 						phandle = <0xba>;
+1119c1120
+< 						phandle = <0xb9>;
+---
+> 						phandle = <0xbb>;
+1130c1131
+< 						phandle = <0xba>;
+---
+> 						phandle = <0xbc>;
+1141c1142
+< 						phandle = <0xbb>;
+---
+> 						phandle = <0xbd>;
+1152c1153
+< 						phandle = <0xbc>;
+---
+> 						phandle = <0xbe>;
+1163c1164
+< 						phandle = <0xbd>;
+---
+> 						phandle = <0xbf>;
+1174c1175
+< 						phandle = <0xbe>;
+---
+> 						phandle = <0xc0>;
+1184c1185
+< 						phandle = <0xbf>;
+---
+> 						phandle = <0xc1>;
+1195c1196
+< 						phandle = <0xc0>;
+---
+> 						phandle = <0xc2>;
+1205c1206
+< 						phandle = <0xc1>;
+---
+> 						phandle = <0xc3>;
+1215c1216
+< 						phandle = <0x4b>;
+---
+> 						phandle = <0x4e>;
+1226c1227
+< 						phandle = <0xc2>;
+---
+> 						phandle = <0xc4>;
+1237c1238
+< 						phandle = <0x49>;
+---
+> 						phandle = <0x4c>;
+1248c1249
+< 						phandle = <0x4a>;
+---
+> 						phandle = <0x4d>;
+1259c1260
+< 						phandle = <0xc3>;
+---
+> 						phandle = <0xc5>;
+1269c1270
+< 						phandle = <0xc4>;
+---
+> 						phandle = <0xc6>;
+1279c1280
+< 						phandle = <0xc5>;
+---
+> 						phandle = <0xc7>;
+1289c1290
+< 						phandle = <0xc6>;
+---
+> 						phandle = <0xc8>;
+1299c1300
+< 						phandle = <0xc7>;
+---
+> 						phandle = <0xc9>;
+1309c1310
+< 						phandle = <0xc8>;
+---
+> 						phandle = <0xca>;
+1319c1320
+< 						phandle = <0xc9>;
+---
+> 						phandle = <0xcb>;
+1329c1330
+< 						phandle = <0x4f>;
+---
+> 						phandle = <0x52>;
+1340c1341
+< 						phandle = <0xca>;
+---
+> 						phandle = <0xcc>;
+1351c1352
+< 						phandle = <0xcb>;
+---
+> 						phandle = <0xcd>;
+1362c1363
+< 						phandle = <0xcc>;
+---
+> 						phandle = <0xce>;
+1373c1374
+< 						phandle = <0xcd>;
+---
+> 						phandle = <0xcf>;
+1384c1385
+< 						phandle = <0x4d>;
+---
+> 						phandle = <0x50>;
+1395c1396
+< 						phandle = <0x4e>;
+---
+> 						phandle = <0x51>;
+1406c1407
+< 						phandle = <0xce>;
+---
+> 						phandle = <0xd0>;
+1416c1417
+< 						phandle = <0xcf>;
+---
+> 						phandle = <0xd1>;
+1426c1427
+< 						phandle = <0xd0>;
+---
+> 						phandle = <0xd2>;
+1436c1437
+< 						phandle = <0xd1>;
+---
+> 						phandle = <0xd3>;
+1446c1447
+< 						phandle = <0xd2>;
+---
+> 						phandle = <0xd4>;
+1456c1457
+< 						phandle = <0xd3>;
+---
+> 						phandle = <0xd5>;
+1466c1467
+< 						phandle = <0xd4>;
+---
+> 						phandle = <0xd6>;
+1476c1477
+< 						phandle = <0xd5>;
+---
+> 						phandle = <0xd7>;
+1486c1487
+< 						phandle = <0xd6>;
+---
+> 						phandle = <0xd8>;
+1497c1498
+< 						phandle = <0xd7>;
+---
+> 						phandle = <0xd9>;
+1508c1509
+< 						phandle = <0xd8>;
+---
+> 						phandle = <0xda>;
+1518c1519
+< 						phandle = <0xd9>;
+---
+> 						phandle = <0xdb>;
+1528c1529
+< 						phandle = <0xda>;
+---
+> 						phandle = <0xdc>;
+1538c1539
+< 						phandle = <0xdb>;
+---
+> 						phandle = <0xdd>;
+1549c1550
+< 						phandle = <0xdc>;
+---
+> 						phandle = <0xde>;
+1560c1561
+< 						phandle = <0xdd>;
+---
+> 						phandle = <0xdf>;
+1571c1572
+< 						phandle = <0xde>;
+---
+> 						phandle = <0xe0>;
+1582c1583
+< 						phandle = <0xdf>;
+---
+> 						phandle = <0xe1>;
+1593c1594
+< 						phandle = <0xe0>;
+---
+> 						phandle = <0xe2>;
+1604c1605
+< 						phandle = <0xe1>;
+---
+> 						phandle = <0xe3>;
+1615c1616
+< 						phandle = <0xe2>;
+---
+> 						phandle = <0xe4>;
+1626c1627
+< 						phandle = <0xe3>;
+---
+> 						phandle = <0xe5>;
+1637c1638
+< 						phandle = <0xe4>;
+---
+> 						phandle = <0xe6>;
+1648c1649
+< 						phandle = <0xe5>;
+---
+> 						phandle = <0xe7>;
+1659c1660
+< 						phandle = <0xe6>;
+---
+> 						phandle = <0xe8>;
+1670c1671
+< 						phandle = <0xe7>;
+---
+> 						phandle = <0xe9>;
+1680c1681
+< 						phandle = <0xe8>;
+---
+> 						phandle = <0xea>;
+1690c1691
+< 						phandle = <0xe9>;
+---
+> 						phandle = <0xeb>;
+1700c1701
+< 						phandle = <0xea>;
+---
+> 						phandle = <0xec>;
+1710c1711
+< 						phandle = <0xeb>;
+---
+> 						phandle = <0x2d>;
+1720c1721
+< 						phandle = <0xec>;
+---
+> 						phandle = <0x2e>;
+1768c1769
+< 				phandle = <0x3f>;
+---
+> 				phandle = <0x42>;
+1778c1779
+< 				phandle = <0x46>;
+---
+> 				phandle = <0x49>;
+1790c1791
+< 				phandle = <0x3a>;
+---
+> 				phandle = <0x3d>;
+1823c1824
+< 				phandle = <0x3b>;
+---
+> 				phandle = <0x3e>;
+1973c1974
+< 					phandle = <0x63>;
+---
+> 					phandle = <0x66>;
+1987c1988
+< 					phandle = <0x64>;
+---
+> 					phandle = <0x67>;
+2001c2002
+< 					phandle = <0x65>;
+---
+> 					phandle = <0x68>;
+2015c2016
+< 					phandle = <0x60>;
+---
+> 					phandle = <0x63>;
+2029c2030
+< 					phandle = <0x61>;
+---
+> 					phandle = <0x64>;
+2043c2044
+< 					phandle = <0x62>;
+---
+> 					phandle = <0x65>;
+2063c2064
+< 					phandle = <0x5b>;
+---
+> 					phandle = <0x5e>;
+2074c2075
+< 					phandle = <0x5c>;
+---
+> 					phandle = <0x5f>;
+2085c2086
+< 					phandle = <0x5d>;
+---
+> 					phandle = <0x60>;
+2096c2097
+< 					phandle = <0x5e>;
+---
+> 					phandle = <0x61>;
+2111c2112
+< 					phandle = <0x6f>;
+---
+> 					phandle = <0x72>;
+2125c2126
+< 					phandle = <0x6b>;
+---
+> 					phandle = <0x6e>;
+2136c2137
+< 					phandle = <0x58>;
+---
+> 					phandle = <0x5b>;
+2147c2148
+< 					phandle = <0x59>;
+---
+> 					phandle = <0x5c>;
+2158c2159
+< 					phandle = <0x5a>;
+---
+> 					phandle = <0x5d>;
+2170c2171
+< 					phandle = <0x6d>;
+---
+> 					phandle = <0x70>;
+2180c2181
+< 					phandle = <0x67>;
+---
+> 					phandle = <0x6a>;
+2190c2191
+< 					phandle = <0x68>;
+---
+> 					phandle = <0x6b>;
+2231c2232
+< 					phandle = <0x53>;
+---
+> 					phandle = <0x56>;
+2592c2593
+< 				phandle = <0x57>;
+---
+> 				phandle = <0x5a>;
+2691c2692
+< 					phandle = <0x54>;
+---
+> 					phandle = <0x57>;
+2831c2832
+< 				clocks = <0x08 0x00 0x02 0x04 0x02 0x03>;
+---
+> 				clocks = <0x08>;
+2833,2834c2834,2838
+< 				status = "disabled";
+< 				phandle = <0x71>;
+---
+> 				status = "okay";
+> 				pinctrl-0 = <0x26>;
+> 				pinctrl-names = "default";
+> 				clock-names = "clkin0";
+> 				phandle = <0x74>;
+2863c2867
+< 				pinctrl-0 = <0x26 0x27>;
+---
+> 				pinctrl-0 = <0x27 0x28>;
+2876c2880
+< 				pinctrl-0 = <0x28 0x29>;
+---
+> 				pinctrl-0 = <0x29 0x2a>;
+2900c2904
+< 				pinctrl-0 = <0x2a 0x2b>;
+---
+> 				pinctrl-0 = <0x2b 0x2c>;
+2937c2941
+< 				status = "disabled";
+---
+> 				status = "okay";
+2938a2943,2945
+> 				pinctrl-0 = <0x2d 0x2e>;
+> 				uart-has-rtscts;
+> 				pinctrl-names = "default";
+2954,2955c2961,2962
+< 			pinctrl-0 = <0x2c>;
+< 			pinctrl-1 = <0x2d>;
+---
+> 			pinctrl-0 = <0x2f>;
+> 			pinctrl-1 = <0x30>;
+2966,2967c2973,2974
+< 			mmc-pwrseq = <0x2e>;
+< 			vmmc-supply = <0x2f>;
+---
+> 			mmc-pwrseq = <0x31>;
+> 			vmmc-supply = <0x32>;
+2969a2977,2982
+> 
+> 			wifi: wifi@1 {
+> 				reg = <0x01>;
+> 				compatible = "sprd,unisoc-wifi";
+> 				phandle = <0x136>;
+> 			};
+2982,2983c2995,2996
+< 			pinctrl-0 = <0x30>;
+< 			pinctrl-1 = <0x31>;
+---
+> 			pinctrl-0 = <0x33>;
+> 			pinctrl-1 = <0x34>;
+2989,2992c3002,3005
+< 			cd-gpios = <0x32 0x2f 0x01>;
+< 			vmmc-supply = <0x2f>;
+< 			vqmmc-supply = <0x2f>;
+< 			phandle = <0x136>;
+---
+> 			cd-gpios = <0x35 0x2f 0x01>;
+> 			vmmc-supply = <0x32>;
+> 			vqmmc-supply = <0x32>;
+> 			phandle = <0x137>;
+3005,3006c3018,3019
+< 			pinctrl-0 = <0x33 0x34 0x35>;
+< 			pinctrl-1 = <0x36>;
+---
+> 			pinctrl-0 = <0x36 0x37 0x38>;
+> 			pinctrl-1 = <0x39>;
+3015,3018c3028,3031
+< 			mmc-pwrseq = <0x37>;
+< 			vmmc-supply = <0x38>;
+< 			vqmmc-supply = <0x39>;
+< 			phandle = <0x137>;
+---
+> 			mmc-pwrseq = <0x3a>;
+> 			vmmc-supply = <0x3b>;
+> 			vqmmc-supply = <0x3c>;
+> 			phandle = <0x138>;
+3032c3045
+< 			phys = <0x3a 0x3b 0x06 0x04>;
+---
+> 			phys = <0x3d 0x3e 0x06 0x04>;
+3034,3035c3047,3048
+< 			vbus-supply = <0x3c>;
+< 			phandle = <0x138>;
+---
+> 			vbus-supply = <0x3f>;
+> 			phandle = <0x139>;
+3043c3056
+< 				phys = <0x3b>;
+---
+> 				phys = <0x3e>;
+3049c3062
+< 				phandle = <0x139>;
+---
+> 				phandle = <0x13a>;
+3060c3073
+< 				phandle = <0x13a>;
+---
+> 				phandle = <0x13b>;
+3072c3085
+< 			operating-points-v2 = <0x3d>;
+---
+> 			operating-points-v2 = <0x40>;
+3074,3075c3087,3088
+< 			mali-supply = <0x3e>;
+< 			phandle = <0x48>;
+---
+> 			mali-supply = <0x41>;
+> 			phandle = <0x4b>;
+3084,3085c3097,3098
+< 			thermal-sensors = <0x3f>;
+< 			phandle = <0x13b>;
+---
+> 			thermal-sensors = <0x42>;
+> 			phandle = <0x13c>;
+3093c3106
+< 					phandle = <0x40>;
+---
+> 					phandle = <0x43>;
+3100c3113
+< 					phandle = <0x45>;
+---
+> 					phandle = <0x48>;
+3107c3120
+< 					phandle = <0x13c>;
+---
+> 					phandle = <0x13d>;
+3114,3115c3127,3128
+< 					trip = <0x40>;
+< 					cooling-device = <0x41 0xffffffff 0xffffffff 0x42 0xffffffff 0xffffffff 0x43 0xffffffff 0xffffffff 0x44 0xffffffff 0xffffffff>;
+---
+> 					trip = <0x43>;
+> 					cooling-device = <0x44 0xffffffff 0xffffffff 0x45 0xffffffff 0xffffffff 0x46 0xffffffff 0xffffffff 0x47 0xffffffff 0xffffffff>;
+3119,3120c3132,3133
+< 					trip = <0x45>;
+< 					cooling-device = <0x41 0xffffffff 0xffffffff 0x42 0xffffffff 0xffffffff 0x43 0xffffffff 0xffffffff 0x44 0xffffffff 0xffffffff>;
+---
+> 					trip = <0x48>;
+> 					cooling-device = <0x44 0xffffffff 0xffffffff 0x45 0xffffffff 0xffffffff 0x46 0xffffffff 0xffffffff 0x47 0xffffffff 0xffffffff>;
+3128,3129c3141,3142
+< 			thermal-sensors = <0x46>;
+< 			phandle = <0x13d>;
+---
+> 			thermal-sensors = <0x49>;
+> 			phandle = <0x13e>;
+3137c3150
+< 					phandle = <0x47>;
+---
+> 					phandle = <0x4a>;
+3144c3157
+< 					phandle = <0x13e>;
+---
+> 					phandle = <0x13f>;
+3151,3152c3164,3165
+< 					trip = <0x47>;
+< 					cooling-device = <0x48 0xffffffff 0xffffffff>;
+---
+> 					trip = <0x4a>;
+> 					cooling-device = <0x4b 0xffffffff 0xffffffff>;
+3182c3195
+< 		phandle = <0x13f>;
+---
+> 		phandle = <0x140>;
+3192c3205
+< 		pinctrl-0 = <0x49 0x4a 0x4b>;
+---
+> 		pinctrl-0 = <0x4c 0x4d 0x4e>;
+3194c3207
+< 		phandle = <0x66>;
+---
+> 		phandle = <0x69>;
+3204c3217
+< 		pinctrl-0 = <0x4c 0x4d 0x4e 0x4f>;
+---
+> 		pinctrl-0 = <0x4f 0x50 0x51 0x52>;
+3209c3222
+< 		phandle = <0x69>;
+---
+> 		phandle = <0x6c>;
+3219c3232
+< 		phandle = <0x6a>;
+---
+> 		phandle = <0x6d>;
+3237c3250
+< 			next-level-cache = <0x50>;
+---
+> 			next-level-cache = <0x53>;
+3239c3252
+< 			operating-points-v2 = <0x51>;
+---
+> 			operating-points-v2 = <0x54>;
+3241,3242c3254,3255
+< 			cpu-supply = <0x52>;
+< 			phandle = <0x41>;
+---
+> 			cpu-supply = <0x55>;
+> 			phandle = <0x44>;
+3256c3269
+< 			next-level-cache = <0x50>;
+---
+> 			next-level-cache = <0x53>;
+3258c3271
+< 			operating-points-v2 = <0x51>;
+---
+> 			operating-points-v2 = <0x54>;
+3260,3261c3273,3274
+< 			cpu-supply = <0x52>;
+< 			phandle = <0x42>;
+---
+> 			cpu-supply = <0x55>;
+> 			phandle = <0x45>;
+3275c3288
+< 			next-level-cache = <0x50>;
+---
+> 			next-level-cache = <0x53>;
+3277c3290
+< 			operating-points-v2 = <0x51>;
+---
+> 			operating-points-v2 = <0x54>;
+3279,3280c3292,3293
+< 			cpu-supply = <0x52>;
+< 			phandle = <0x43>;
+---
+> 			cpu-supply = <0x55>;
+> 			phandle = <0x46>;
+3294c3307
+< 			next-level-cache = <0x50>;
+---
+> 			next-level-cache = <0x53>;
+3296c3309
+< 			operating-points-v2 = <0x51>;
+---
+> 			operating-points-v2 = <0x54>;
+3298,3299c3311,3312
+< 			cpu-supply = <0x52>;
+< 			phandle = <0x44>;
+---
+> 			cpu-supply = <0x55>;
+> 			phandle = <0x47>;
+3309c3322
+< 			phandle = <0x50>;
+---
+> 			phandle = <0x53>;
+3316c3329
+< 		phandle = <0x51>;
+---
+> 		phandle = <0x54>;
+3378c3391
+< 		enable-gpios = <0x53 0x02 0x00>;
+---
+> 		enable-gpios = <0x56 0x02 0x00>;
+3381c3394
+< 		phandle = <0x5f>;
+---
+> 		phandle = <0x62>;
+3388c3401
+< 		phandle = <0x70>;
+---
+> 		phandle = <0x73>;
+3395c3408
+< 		phandle = <0x6c>;
+---
+> 		phandle = <0x6f>;
+3404c3417
+< 				remote-endpoint = <0x54>;
+---
+> 				remote-endpoint = <0x57>;
+3412,3413c3425,3426
+< 		reset-gpios = <0x32 0x25 0x01>;
+< 		phandle = <0x37>;
+---
+> 		reset-gpios = <0x35 0x25 0x01>;
+> 		phandle = <0x3a>;
+3423c3436
+< 				remote-endpoint = <0x55>;
+---
+> 				remote-endpoint = <0x58>;
+3439c3452
+< 		vin-supply = <0x38>;
+---
+> 		vin-supply = <0x3b>;
+3441c3454
+< 		phandle = <0x39>;
+---
+> 		phandle = <0x3c>;
+3450c3463
+< 		phandle = <0x56>;
+---
+> 		phandle = <0x59>;
+3459c3472
+< 		gpio = <0x32 0x16 0x00>;
+---
+> 		gpio = <0x35 0x16 0x00>;
+3461c3474
+< 		phandle = <0x3c>;
+---
+> 		phandle = <0x3f>;
+3469c3482
+< 		vin-supply = <0x38>;
+---
+> 		vin-supply = <0x3b>;
+3471c3484
+< 		phandle = <0x140>;
+---
+> 		phandle = <0x141>;
+3479c3492
+< 		vin-supply = <0x2f>;
+---
+> 		vin-supply = <0x32>;
+3481c3494
+< 		phandle = <0x38>;
+---
+> 		phandle = <0x3b>;
+3489,3490c3502,3503
+< 		vin-supply = <0x56>;
+< 		gpio = <0x32 0x18 0x06>;
+---
+> 		vin-supply = <0x59>;
+> 		gpio = <0x35 0x18 0x06>;
+3500c3513
+< 		vin-supply = <0x2f>;
+---
+> 		vin-supply = <0x32>;
+3510c3523
+< 		vin-supply = <0x56>;
+---
+> 		vin-supply = <0x59>;
+3512c3525
+< 		phandle = <0x2f>;
+---
+> 		phandle = <0x32>;
+3520,3521c3533,3534
+< 		pwm-supply = <0x56>;
+< 		pwms = <0x57 0x01 0x4e2 0x00>;
+---
+> 		pwm-supply = <0x59>;
+> 		pwms = <0x5a 0x01 0x4e2 0x00>;
+3525c3538
+< 		phandle = <0x52>;
+---
+> 		phandle = <0x55>;
+3532c3545
+< 		audio-aux-devs = <0x58 0x59 0x5a 0x5b 0x5c 0x5d 0x5e 0x5f>;
+---
+> 		audio-aux-devs = <0x5b 0x5c 0x5d 0x5e 0x5f 0x60 0x61 0x62>;
+3539c3552
+< 			sound-dai = <0x60>;
+---
+> 			sound-dai = <0x63>;
+3543c3556
+< 			sound-dai = <0x61>;
+---
+> 			sound-dai = <0x64>;
+3547c3560
+< 			sound-dai = <0x62>;
+---
+> 			sound-dai = <0x65>;
+3551c3564
+< 			sound-dai = <0x63>;
+---
+> 			sound-dai = <0x66>;
+3555c3568
+< 			sound-dai = <0x64>;
+---
+> 			sound-dai = <0x67>;
+3559c3572
+< 			sound-dai = <0x65>;
+---
+> 			sound-dai = <0x68>;
+3563c3576
+< 			sound-dai = <0x66>;
+---
+> 			sound-dai = <0x69>;
+3569c3582
+< 				sound-dai = <0x67 0x00>;
+---
+> 				sound-dai = <0x6a 0x00>;
+3573c3586
+< 				sound-dai = <0x68 0x00>;
+---
+> 				sound-dai = <0x6b 0x00>;
+3578c3591
+< 			sound-dai = <0x69>;
+---
+> 			sound-dai = <0x6c>;
+3584c3597
+< 				sound-dai = <0x67 0x01>;
+---
+> 				sound-dai = <0x6a 0x01>;
+3588c3601
+< 				sound-dai = <0x68 0x01>;
+---
+> 				sound-dai = <0x6b 0x01>;
+3593c3606
+< 			sound-dai = <0x6a>;
+---
+> 			sound-dai = <0x6d>;
+3602c3615
+< 				sound-dai = <0x67 0x02>;
+---
+> 				sound-dai = <0x6a 0x02>;
+3606c3619
+< 				sound-dai = <0x68 0x02>;
+---
+> 				sound-dai = <0x6b 0x02>;
+3611c3624
+< 			sound-dai = <0x6b>;
+---
+> 			sound-dai = <0x6e>;
+3614c3627
+< 				sound-dai = <0x6c>;
+---
+> 				sound-dai = <0x6f>;
+3618c3631
+< 				sound-dai = <0x68 0x04>;
+---
+> 				sound-dai = <0x6b 0x04>;
+3623c3636
+< 			sound-dai = <0x6d>;
+---
+> 			sound-dai = <0x70>;
+3626c3639
+< 				sound-dai = <0x68 0x05>;
+---
+> 				sound-dai = <0x6b 0x05>;
+3631c3644
+< 			sound-dai = <0x68 0x03>;
+---
+> 			sound-dai = <0x6b 0x03>;
+3639c3652
+< 			sound-dai = <0x67 0x03>;
+---
+> 			sound-dai = <0x6a 0x03>;
+3642c3655
+< 				sound-dai = <0x6e>;
+---
+> 				sound-dai = <0x71>;
+3647c3660
+< 			sound-dai = <0x6f>;
+---
+> 			sound-dai = <0x72>;
+3650c3663
+< 				sound-dai = <0x70>;
+---
+> 				sound-dai = <0x73>;
+3660c3673
+< 		vin-supply = <0x56>;
+---
+> 		vin-supply = <0x59>;
+3663c3676
+< 		phandle = <0x3e>;
+---
+> 		phandle = <0x41>;
+3670,3671c3683,3684
+< 		pwms = <0x71 0x00 0x7736 0x00>;
+< 		phandle = <0x72>;
+---
+> 		pwms = <0x74 0x00 0x7736 0x00>;
+> 		phandle = <0x75>;
+3676,3677c3689,3690
+< 		reset-gpios = <0x32 0x47 0x01>;
+< 		clocks = <0x72>;
+---
+> 		reset-gpios = <0x35 0x47 0x01>;
+> 		clocks = <0x75>;
+3679c3692
+< 		phandle = <0x2e>;
+---
+> 		phandle = <0x31>;
+3687c3700
+< 			gpios = <0x53 0x0b 0x01>;
+---
+> 			gpios = <0x56 0x0b 0x01>;
+3691,3700c3704,3706
+< 		net_led {
+< 			led_name = "net_led";
+< 			gpios = <0x53 0x09 0x01>;
+< 			default-state = "off";
+< 			linux,default-trigger = "0.0:00:link";
+< 		};
+< 
+< 		remote_led {
+< 			led_name = "remote_led";
+< 			gpios = <0x53 0x0a 0x01>;
+---
+> 		green_led {
+> 			led_name = "green_led";
+> 			gpios = <0x56 0x0a 0x01>;
+3702c3708
+< 			linux,default-trigger = "rc-feedback";
+---
+> 			linux,default-trigger = "heartbeat";
+3984a3991
+> 		wifi = "/soc/mmc@ffe03000/wifi@1";

@@ -1,0 +1,28 @@
+--- main.c.original	2026-09-19 12:15:50.551097200 +0800
++++ main.c.patched	2026-09-19 12:15:49.810708600 +0800
+@@ -944,12 +944,23 @@
+ 		if (!is_zero_ether_addr(sa->sa_data)) {
+ 			vif->has_rand_mac = true;
+ 			memcpy(vif->random_mac, sa->sa_data, ETH_ALEN);
+-			memcpy(dev->dev_addr, sa->sa_data, ETH_ALEN);
++			/* [FnNAS-FIX 1] kernel >= 6.11: dev_addr is a const ptr tracked
++			 * by dev_addr_shadow; a raw memcpy desyncs them and
++			 * dev_addr_check() then makes __dev_open() fail (-EINVAL),
++			 * leaving the interface permanently DOWN. */
++			dev->addr_len = ETH_ALEN;
++			eth_hw_addr_set(dev, sa->sa_data);
+ 		} else {
+ 			vif->has_rand_mac = false;
+ 			netdev_info(dev, "need clear random mac for sta/softap mode\n");
+ 			memset(vif->random_mac, 0, ETH_ALEN);
+-			memcpy(dev->dev_addr, vif->mac, ETH_ALEN);
++			/* [FnNAS-FIX 2] same as above; also vif->mac is never
++			 * filled in, use the firmware-reported MAC instead. */
++			dev->addr_len = ETH_ALEN;
++			if (is_valid_ether_addr(vif->mac))
++				eth_hw_addr_set(dev, vif->mac);
++			else if (is_valid_ether_addr(vif->priv->mac_addr))
++				eth_hw_addr_set(dev, vif->priv->mac_addr);
+ 		}
+ 	}
+ 	/*return success to pass vts test*/
