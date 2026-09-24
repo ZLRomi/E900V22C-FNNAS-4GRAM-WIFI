@@ -926,6 +926,26 @@ replace_kernel() {
     [[ "${PLATFORM}" == "rockchip" ]] && ln -sf dtb "${tag_bootfs}/dtb-${kernel_name}"
     [[ "$(ls ${tag_bootfs}/dtb/${PLATFORM} -l 2>/dev/null | grep "^-" | wc -l)" -ge "2" ]] || error_msg "/boot/dtb/${PLATFORM} files is missing."
 
+    # ==================== E900V22C: re-apply the board dtb ====================
+    # The kernel package untarred just above ships its own dtb/${PLATFORM} tree and
+    # therefore overwrites the board-specific dtb that was copied from
+    # different-files/${board}/bootfs in step (3/7). Re-apply the board overlay so
+    # the dtb that ends up in the image is the one maintained in this repository
+    # (4G memory boundary + UWE5621DS WiFi nodes), then hard-fail if it is wrong.
+    if [[ -n "${board}" && -d "${different_files}/${board}/bootfs" ]]; then
+        cp -rf "${different_files}/${board}/bootfs/." "${tag_bootfs}/" 2>/dev/null || true
+        _board_dtb="${tag_bootfs}/dtb/${PLATFORM}/${FDTFILE}"
+        if [[ -f "${_board_dtb}" ]]; then
+            if dtc -I dtb -O dts "${_board_dtb}" 2>/dev/null | grep -A3 "memory@0" | grep -q "0xf5700000"; then
+                echo -e "${INFO} Board dtb re-applied and verified: dtb/${PLATFORM}/${FDTFILE} ($(stat -c%s "${_board_dtb}") bytes, 4G boundary)"
+            else
+                error_msg "Board dtb ${FDTFILE} does not carry the 4G memory boundary (0xf5700000)."
+            fi
+        else
+            error_msg "Missing board dtb after re-apply: ${_board_dtb}"
+        fi
+    fi
+
     # 03. For /usr/src/linux-headers-${kernel_name}
     header_path="linux-headers-${kernel_name}"
     [[ -n "${tag_rootfs}" && -d "${tag_rootfs}/usr/src" ]] && rm -rf "${tag_rootfs}/usr/src"/linux-headers-* 2>/dev/null
