@@ -162,7 +162,10 @@ jobs:
           echo "img=$IMG" >> $GITHUB_OUTPUT
           echo "img_name=$(basename "$IMG")" >> $GITHUB_OUTPUT
 
-          # 冒烟测试（非阻断）：能看就看一眼，失败只告警，不影响发布
+          # ===== rootfs 结构守门（阻断式）=====
+          # usr-merged 系统里 /lib /bin /sbin 必须是【符号链接】。
+          # 一旦被覆盖成真实目录，动态加载器就会找不到，init 起不来
+          # → Kernel panic "Attempted to kill init! exitcode=0x00000100"
           TMP=/tmp/smoke.img
           case "$IMG" in
             *.xz)  xz -dc "$IMG" > $TMP 2>/dev/null ;;
@@ -170,42 +173,76 @@ jobs:
             *.zst) zstd -dc "$IMG" > $TMP 2>/dev/null ;;
             *)     cp -f "$IMG" $TMP 2>/dev/null ;;
           esac
-          if [ -s "$TMP" ]; then
-            echo "::group::冒烟测试（非阻断）"
-            sfdisk -d $TMP 2>/dev/null | head -6 || true
-            OFF1=$(sfdisk -d $TMP 2>/dev/null | awk -F'start=' '/img1/{split($2,a,","); print a[1]*512}' | head -1)
-            if [ -n "${OFF1:-}" ]; then
-              export MTOOLS_SKIP_CHECK=1
-              if mcopy -i "$TMP@@${OFF1}" "::/dtb/amlogic/${DTB_NAME}" /tmp/got.dtb 2>/dev/null; then
-                dtc -I dtb -O dts /tmp/got.dtb 2>/dev/null | grep -A3 'memory@0' || true
-                if dtc -I dtb -O dts /tmp/got.dtb 2>/dev/null | grep -q '0xf5700000'; then
-                  echo "✓ 镜像内 dtb 内存边界正确"
-                else
-                  echo "⚠ 未能确认镜像内 dtb 边界"
-                fi
-              fi
-            fi
-            OFF2=$(sfdisk -d $TMP 2>/dev/null | awk -F'start=' '/img2/{split($2,a,","); print a[1]*512}' | head -1)
-            if [ -n "${OFF2:-}" ]; then
-              LOOP=$(sudo losetup --show -f -o "$OFF2" $TMP 2>/dev/null || true)
-              if [ -n "${LOOP:-}" ]; then
-                sudo mkdir -p /mnt/vroot
-                if sudo mount "$LOOP" /mnt/vroot 2>/dev/null; then
-                  echo "  内核: $(ls /mnt/vroot/lib/modules/ 2>/dev/null | tr '\n' ' ')"
-                  ls -la /mnt/vroot/lib/modules/*/extra/ 2>/dev/null | head -5 || true
-                  echo "  fnnas-install 4G-PROD 标记: $(sudo grep -c '4G-PROD' /mnt/vroot/usr/sbin/fnnas-install 2>/dev/null || echo 0)"
-                  echo "  已 enable 服务: $(sudo ls /mnt/vroot/etc/systemd/system/multi-user.target.wants/ 2>/dev/null | tr '\n' ' ')"
-                  sudo umount /mnt/vroot 2>/dev/null || true
-                fi
-                sudo losetup -d "$LOOP" 2>/dev/null || true
-              fi
-            fi
-            echo "::endgroup::"
-          else
-            echo "⚠ 解压失败，跳过冒烟测试（不影响发布）"
+          if [ ! -s "$TMP" ]; then
+            echo "::error::镜像解压失败，无法校验"; exit 1
           fi
+          sfdisk -d $TMP 2>/dev/null | head -6 || true
+          OFF1=$(sfdisk -d $TMP 2>/dev/null | awk -F'start=' '/img1/{split($2,a,","); print a[1]*512}' | head -1)
+          OFF2=$(sfdisk -d $TMP 2>/dev/null | awk -F'start=' '/img2/{split($2,a,","); print a[1]*512}' | head -1)
+          if [ -z "${OFF1:-}" ] || [ -z "${OFF2:-}" ]; then
+            echo "::error::分区表异常，取不到分区偏移"; exit 1
+          fi
+
+          echo "::group::引导分区校验"
+          export MTOOLS_SKIP_CHECK=1
+          if mcopy -i "$TMP@@${OFF1}" "::/dtb/amlogic/${DTB_NAME}" /tmp/got.dtb 2>/dev/null; then
+            dtc -I dtb -O dts /tmp/got.dtb 2>/dev/null | grep -A3 'memory@0' || true
+            dtc -I dtb -O dts /tmp/got.dtb 2>/dev/null | grep -q '0xf5700000' \
+              || { echo "::error::镜像内 dtb 内存边界不是 0xf5700000"; exit 1; }
+            echo "✓ dtb 内存边界 = 0xf5700000（4G 安全值）"
+          else
+            echo "::error::引导分区里找不到 ${DTB_NAME}"; exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::rootfs 结构守门"
+          LOOP=$(sudo losetup --show -f -o "$OFF2" $TMP)
+          sudo mkdir -p /mnt/vroot
+          if ! sudo mount "$LOOP" /mnt/vroot; then
+            echo "::error::rootfs 挂载失败"; sudo losetup -d "$LOOP" || true; exit 1
+          fi
+
+          fail=0
+          for d in bin sbin lib; do
+            if [ -L "/mnt/vroot/$d" ]; then
+              echo "✓ /$d -> $(readlink /mnt/vroot/$d)"
+            else
+              echo "::error::/$d 不是符号链接 —— usr-merged 结构被破坏，实机必然 panic"
+              sudo ls -la /mnt/vroot/ | head -30
+              fail=1
+            fi
+          done
+          if [ -e /mnt/vroot/usr/lib/ld-linux-aarch64.so.1 ]; then
+            echo "✓ 动态加载器 /usr/lib/ld-linux-aarch64.so.1 存在"
+          else
+            echo "::error::缺少动态加载器 /usr/lib/ld-linux-aarch64.so.1"; fail=1
+          fi
+
+          MODDIR="/mnt/vroot/usr/lib/modules/${KERNEL_VERSION}/extra"
+          for k in sprdwl_ng.ko uwe5621_bsp_sdio.ko; do
+            if sudo test -f "$MODDIR/$k"; then
+              echo "✓ WiFi 驱动 $k ($(sudo stat -c%s "$MODDIR/$k" 2>/dev/null) B)"
+            else
+              echo "::error::缺少 WiFi 驱动 $MODDIR/$k"; fail=1
+            fi
+          done
+          if sudo test -d /mnt/vroot/lib; then
+            echo "::error::/lib 被创建成了真实目录（overlay 路径写错了）"
+            sudo ls -la /mnt/vroot/lib | head -10
+            fail=1
+          fi
+          echo "  内核版本目录: $(ls /mnt/vroot/usr/lib/modules/ 2>/dev/null | tr '\n' ' ')"
+          echo "  fnnas-install 4G-PROD 标记: $(sudo grep -c '4G-PROD' /mnt/vroot/usr/sbin/fnnas-install 2>/dev/null || echo 0)"
+          echo "  已 enable 服务: $(sudo ls /mnt/vroot/etc/systemd/system/multi-user.target.wants/ 2>/dev/null | tr '\n' ' ')"
+          sudo umount /mnt/vroot || true
+          sudo losetup -d "$LOOP" || true
+          echo "::endgroup::"
+
           rm -f $TMP
-          echo "产物就绪，直接发布"
+          if [ "$fail" != "0" ]; then
+            echo "::error::rootfs 结构守门未通过，禁止发布"; exit 1
+          fi
+          echo "✓ 全部校验通过，允许发布"
 
       - name: 准备 Release 附件
         id: assets
