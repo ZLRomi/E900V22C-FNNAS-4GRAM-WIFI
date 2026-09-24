@@ -232,7 +232,7 @@ jobs:
             echo "| 内核 | ${KERNEL_VERSION}-trim |"
             echo "| 内存 | 3927 MiB 可用（边界 0xf5700000，顶部 169MiB 留给 BL31/TEE 安全区） |"
             echo "| WiFi | 紫光展锐 UWE5621DS（dev_addr + conn-leak 双补丁） |"
-            echo "| eMMC | DDR52 @50MHz（规避 HS200 写通道不稳定） |"
+            echo "| eMMC | DDR52 50MHz 时钟（规避 HS200 写通道不稳定） |"
             echo "| 安装脚本 | 生产版 fnnas-install：无 dtb 选择 / 仅 4G / 内存保护 |"
             echo "| 基础镜像 | ${{ steps.base.outputs.ver }} |"
             echo ""
