@@ -39,8 +39,8 @@ permissions:
   contents: write
 
 env:
-  PATCH_REPO: 'ZLRomi/fnnas'
-  PATCH_REF: 'main'
+  # 构建链已并入本仓库，用仓库自身（uses: ./）
+  SELF_REF: 'main'
   KERNEL_VERSION: '6.12.41'
   BOARD: 'amlogic'
   DTB_NAME: 'meson-g12a-s905l3a-e900v22c.dtb'
@@ -63,17 +63,22 @@ jobs:
           df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
-          sudo apt-get -y update
-          # 官方依赖清单（ophub 自己用的同一份）
-          sudo apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2604-make-fnnas-depends) \
-            || sudo apt-get -y install build-essential device-tree-compiler mtools btrfs-progs \
-                 dosfstools xz-utils zstd gzip file jq parted pv rsync
-          sudo systemctl daemon-reload
-          sudo apt-get -y autoremove --purge || true
-          sudo apt-get clean
-          sudo timedatectl set-timezone "${TZ:-Asia/Shanghai}" || true
+          sudo apt-get -y update || true
+          DEPS="$(curl -fsSL https://ophub.org/ubuntu2604-make-fnnas-depends 2>/dev/null || true)"
+          FALLBACK="build-essential device-tree-compiler mtools btrfs-progs dosfstools xz-utils zstd gzip file jq parted pv rsync"
+          if [ -n "${DEPS}" ]; then
+            echo "使用官方依赖清单"
+            sudo apt-get -y install ${DEPS} || sudo apt-get -y install ${FALLBACK}
+          else
+            echo "官方清单获取失败，使用内置清单"
+            sudo apt-get -y install ${FALLBACK}
+          fi
+          sudo apt-get clean || true
+          # GitHub runner 里没有 systemd，且 run 步骤默认 bash -e，
+          # 所以不要调 systemctl / timedatectl（一条失败整步就挂）
           date -u
           df -h /
+          echo "deps ready"
 
       - name: 校验 fork 里的差异化文件（构建前守门）
         env:
