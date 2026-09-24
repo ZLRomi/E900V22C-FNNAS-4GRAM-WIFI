@@ -1,0 +1,16 @@
+[Unit]
+Description=fnnas filesystem resize
+After=local-fs.target
+ConditionPathExists=/usr/sbin/fnnas-tf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/fnnas-tf
+TimeoutStartSec=6min
+
+StandardInput=tty
+TTYPath=/dev/console
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

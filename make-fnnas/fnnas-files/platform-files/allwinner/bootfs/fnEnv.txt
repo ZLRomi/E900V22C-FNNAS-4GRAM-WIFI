@@ -1,0 +1,9 @@
+verbosity=1
+bootlogo=false
+console=both
+extraargs=cma=256M
+fdtfile=allwinner/sun50i-h618-orangepi-zero3.dtb
+kernelfile=vmlinuz-6.18.18-trim
+initrdfile=uInitrd-6.18.18-trim
+instdisk_bootuuid=55d3056b-01
+instdisk_rootuuid=55d3056b-02
