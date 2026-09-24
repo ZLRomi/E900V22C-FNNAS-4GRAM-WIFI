@@ -139,7 +139,7 @@ jobs:
         with:
           build_target: 'fnnas'
           fnnas_path: ${{ steps.base.outputs.url }}
-          fnnas_board: amlogic
+          fnnas_board: e900v22c
           kernel_repo: ophub/fnnas
           fnnas_kernel: '6.12.41'
           auto_kernel: 'false'
