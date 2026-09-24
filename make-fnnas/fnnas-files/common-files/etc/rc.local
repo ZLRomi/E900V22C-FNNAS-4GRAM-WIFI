@@ -3,18 +3,7 @@
 # rc.local
 #
 # This script is executed at the end of each multiuser runlevel.
-# Make sure that the script will "
-# ===== E900V22C (S905L3A) 4G RAM + WiFi =====
-# postgresql 未启用 -> 5666 启动慢（triminit 连库重试 122 秒）+ 服务 panic 循环
-# resmon 未启用    -> 资源管理 CPU/内存显示 0
-for _svc in postgresql.service postgresql@15-main.service resmon_service.service; do
-    if [ -f "/lib/systemd/system/${_svc}" ] || [ -f "/etc/systemd/system/${_svc}" ]; then
-        systemctl is-enabled "${_svc}" >/dev/null 2>&1 || systemctl enable "${_svc}" >/dev/null 2>&1 || true
-        systemctl is-active  "${_svc}" >/dev/null 2>&1 || systemctl start  "${_svc}" >/dev/null 2>&1 || true
-    fi
-done
-
-exit 0" on success or any other
+# Make sure that the script will "exit 0" on success or any other
 # value on error.
 #
 # In order to enable or disable this script just change the execution
@@ -22,7 +11,23 @@ exit 0" on success or any other
 #
 # By default this script does nothing.
 
+# ===== E900V22C (S905L3A) 4G RAM + WiFi =====
+# postgresql 未启用 -> 5666 启动慢（triminit 连库重试 122 秒）+ 依赖服务 panic 循环
+# resmon 未启用    -> 资源管理 CPU/内存显示 0
+for _svc in postgresql.service resmon_service.service; do
+    if [ -f "/lib/systemd/system/${_svc}" ] || [ -f "/etc/systemd/system/${_svc}" ]; then
+        systemctl is-enabled "${_svc}" >/dev/null 2>&1 || systemctl enable "${_svc}" >/dev/null 2>&1 || true
+        systemctl is-active  "${_svc}" >/dev/null 2>&1 || systemctl start  "${_svc}" >/dev/null 2>&1 || true
+    fi
+done
+
+# WiFi 驱动：补一次 depmod，否则 modprobe 找不到模块名
+_moddir="/usr/lib/modules/${KERNEL_RELEASE:-6.12.41-trim}/extra"
+if [ -d "${_moddir}" ]; then
+    /sbin/depmod -a >/dev/null 2>&1 || depmod -a >/dev/null 2>&1 || true
+fi
+
+# FnNAS / ophub 的设备相关初始化（务必最后执行，不能被前面的错误挡住）
 [[ -x "/etc/custom_service/start_service.sh" ]] && bash /etc/custom_service/start_service.sh &
 
 exit 0
-
