@@ -96,7 +96,7 @@ jobs:
           echo "✓ dtb 正确"
 
           echo "--- fork 里的 WiFi 驱动 ---"
-          KO_DIR="make-fnnas/fnnas-files/different-files/e900v22c/rootfs/lib/modules/${KERNEL_VERSION}-trim/extra"
+          KO_DIR="make-fnnas/fnnas-files/different-files/e900v22c/rootfs/usr/lib/modules/${KERNEL_VERSION}-trim/extra"
           for ko in sprdwl_ng.ko uwe5621_bsp_sdio.ko; do
             curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/${KO_DIR}/${ko}" -o "/tmp/$ko" \
               || { echo "::error::fork 里缺 $ko"; exit 1; }
