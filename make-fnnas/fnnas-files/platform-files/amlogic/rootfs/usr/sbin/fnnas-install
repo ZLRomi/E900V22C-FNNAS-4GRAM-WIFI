@@ -1,0 +1,988 @@
+#!/bin/bash
+#================================================================================================
+#
+# This file is licensed under the terms of the GNU General Public
+# License version 2. This program is licensed "as is" without any
+# warranty of any kind, whether express or implied.
+#
+# This file is a part of the remake fnnas
+# https://github.com/ophub/fnnas
+#
+# Function: Install FnNAS to eMMC for Amlogic devices
+# Copyright (C) 2021- https://github.com/unifreq/openwrt_packit
+# Copyright (C) 2022- https://github.com/7Ji/ampart
+# Copyright (C) 2021- https://github.com/ophub/fnnas
+#
+# Command: fnnas-install [-y yes/no] [-m yes/no] [-a yes/no] [-d dtb-file]
+#
+#===============================================================================================
+#                        E900V22C / S905L3A  4GB RAM 专用生产版
+#===============================================================================================
+# 与原版 ophub fnnas-install 的差异
+#
+#  [1] 不再提供机型选择菜单（原版会列出一堆盒子让你选）
+#      机型 / SoC / 分区参数全部从运行中的 /etc/ophub-release 自动读取，
+#      因此不再依赖 /etc/model_database.conf。
+#
+#  [2] 不再选择 dtb，也不改写引导配置里的 dtb 引用
+#      安装到 eMMC 的 dtb 就是「本机当前正在使用的那个 dtb」。
+#      本机 /boot 里的 dtb 已含 4G 运存边界 + WiFi(UWE5621DS) + eMMC DDR52 修复，
+#      整份 /boot 原样复制到 eMMC，所以装完 dtb 不会退化。
+#
+#  [3] 只允许 4G 运存配置安装
+#      运行中 dtb 的内存边界必须是厂商 4G 安全值 0xf5700000 (3927MiB)。
+#      - 0x80000000 (2G)      -> 拒绝（本包只针对 4G 机型）
+#      - 0xfe000000 (3.97G)   -> 拒绝（顶部 143MiB 是 BL31/TEE 安全区，
+#                                     内核 CMA 会压在上面，拷贝大文件时
+#                                     安全世界被踩 -> 核心进程猝死 -> 安装失败）
+#      确认要强装可加 --force-memory。
+#
+#  [4] 内存保护（这是 4G 机型能装成功的关键）
+#      整个脚本自举进受限 cgroup（MemoryHigh=1.5G / MemoryMax=2G），
+#      并把脏页上限压到 64MiB。页缓存超限会被回收，不会一路涨到安全区。
+#
+#  [5] 拷贝加固
+#      tar 管道加 PIPESTATUS 校验，拷贝后再逐目录核对体积；
+#      失败会明确报错，而不是留下一个半成品 rootfs。
+#
+# Optional parameters:
+#   -y = non-interactive, use defaults (rootfs expands to full disk)
+#   -m = use mainline u-boot (default: no)
+#   -a = use ampart partition table adjustment tool (default: yes)
+#   -d = override the auto-detected dtb file name (rarely needed)
+#
+# Examples:
+#   fnnas-install -y                # 生产/批量：全自动装到 eMMC
+#   fnnas-install                   # 交互：只有分区大小会问你一句
+#   fnnas-install --force-memory    # 明知内存边界不对也要装（不推荐）
+#
+#======================================== Functions list ========================================
+#
+# error_msg           : Output error message and abort
+# check_depends       : Check dependencies
+# init_var            : Initialize all variables
+# ampart_tool         : Repartition eMMC using ampart
+# detect_running_dtb  : Resolve the dtb the running system booted with  [4G-PROD]
+# require_4g_dtb      : Abort unless the running dtb is the 4G one     [4G-PROD]
+# mem_guard_begin/end : Cap memory + dirty pages during the copy       [4G-PROD]
+# show_partition_menu : Display partition options menu
+# partition_sizing    : Determine partition sizes
+# create_partition    : Create eMMC partitions
+# copy_bootfs         : Copy BOOTFS partition files
+# copy_rootfs         : Copy ROOTFS partition files
+#
+#==================================== Set default parameters ====================================
+#
+# Use mainline u-boot by default (-m)
+auto_mainline_uboot="no"
+# Use ampart partition tool by default (-a)
+use_ampart="yes"
+# Show all device list by default (-l) -- kept for CLI compatibility only
+show_all_list="no"
+
+# ============ [4G-PROD] 生产版参数 ============
+# Non-interactive mode (-y)
+auto_yes="no"
+# Override the auto-detected dtb file name (-d / FDTFILE_OVERRIDE)
+FDTFILE_OVERRIDE=""
+# Vendor 4G safe memory boundary: linux,usable-memory = <0x00 0xf5700000>
+# Everything above it belongs to BL31 / TEE and must never be used by Linux.
+MEM_4G_SAFE=$((0xf5700000))
+# Allowed drift when comparing boundaries (0 = exact)
+# Set to a non-zero value only if a dtb declares a smaller safe boundary.
+mem_guard_high="${MEM_CGROUP_HIGH:-1536M}"
+mem_guard_max="${MEM_CGROUP_CAP:-2048M}"
+force_memory="no"
+mem_guard_saved=""
+
+# Device model database
+model_conf="/etc/model_database.conf"
+# Custom FnNAS firmware information
+ophub_release_file="/etc/ophub-release"
+# FnNAS configuration file
+fnnas_conf="/etc/fnnas.conf"
+# Installation preprocessing directory
+tmp_path="/ddbr"
+
+# Set font color
+STEPS="[\033[95m STEPS \033[0m]"
+INFO="[\033[94m INFO \033[0m]"
+SUCCESS="[\033[92m SUCCESS \033[0m]"
+OPTIONS="[\033[93m OPTIONS \033[0m]"
+ERROR="[\033[91m ERROR \033[0m]"
+IDX="\033[4;93m3\033[0m"
+#
+#================================================================================================
+
+# Encountered a serious error, abort the script execution
+error_msg() {
+    echo -e "${ERROR} ${1}"
+    exit 1
+}
+
+#===============================================================================================
+# [4G-PROD] 解析「系统当前正在使用的 dtb」
+#   优先级: -d 指定 > /boot/fnEnv.txt > /boot/uEnv.txt > /boot/extlinux/extlinux.conf
+#   结果写入全局 FDTFILE（仅文件名，例如 meson-g12a-s905l3a-e900v22c.dtb）
+#===============================================================================================
+detect_running_dtb() {
+    echo -e "${STEPS} Resolving the dtb in use..."
+
+    if [[ -n "${FDTFILE_OVERRIDE}" ]]; then
+        FDTFILE="$(basename "${FDTFILE_OVERRIDE}")"
+        echo -e "${INFO} dtb from command line: [ ${FDTFILE} ]"
+    fi
+
+    local _cfg _line
+    if [[ -z "${FDTFILE}" ]]; then
+        for _cfg in /boot/fnEnv.txt /boot/uEnv.txt; do
+            [[ -f "${_cfg}" ]] || continue
+            _line="$(grep -iE '^[[:space:]]*(fdtfile|fdt)[[:space:]]*=' "${_cfg}" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '"'"'"' \r')"
+            [[ -n "${_line}" ]] || continue
+            FDTFILE="$(basename "${_line}")"
+            echo -e "${INFO} dtb from [ $(basename ${_cfg}) ]: [ ${FDTFILE} ]"
+            break
+        done
+    fi
+
+    if [[ -z "${FDTFILE}" && -f /boot/extlinux/extlinux.conf ]]; then
+        _line="$(grep -iE '^[[:space:]]*(fdt|devicetree)[[:space:]]' /boot/extlinux/extlinux.conf 2>/dev/null | tail -n1 | awk '{print $NF}' | tr -d '"'"'"' \r')"
+        [[ -n "${_line}" ]] && {
+            FDTFILE="$(basename "${_line}")"
+            echo -e "${INFO} dtb from [ extlinux.conf ]: [ ${FDTFILE} ]"
+        }
+    fi
+
+    local _dtb_path=""
+    [[ -n "${FDTFILE}" && -f "/boot/dtb/amlogic/${FDTFILE}" ]] && _dtb_path="/boot/dtb/amlogic/${FDTFILE}"
+    [[ -n "${_dtb_path}" ]] || {
+        # 兜底：找出 /boot 里最近被写入的、且内存节点合法的 dtb
+        _dtb_path="$(find /boot/dtb -name '*.dtb' -newer /boot/Image 2>/dev/null | head -n1)"
+    }
+    [[ -n "${_dtb_path}" && -f "${_dtb_path}" ]] ||         error_msg "Cannot resolve the running dtb. /boot/dtb/amlogic/${FDTFILE:-<empty>} not found."
+    FDTFILE="$(basename "${_dtb_path}")"
+
+    echo -e "${INFO} Using dtb (same as the running system): [ ${FDTFILE} ]"
+    echo -e "${INFO} Path on this system: [ ${_dtb_path} ]  ($(stat -c%s "${_dtb_path}") B)"
+    echo -e "${INFO} md5: $(md5sum "${_dtb_path}" | awk '{print $1}')"
+    DTB_SOURCE_PATH="${_dtb_path}"
+}
+
+#===============================================================================================
+# [4G-PROD] 内存边界检查：本包只支持 4G 运存安装
+#   读取运行中 dtb 的 memory 节点，与厂商 4G 安全值 0xf5700000 比对
+#===============================================================================================
+require_4g_dtb() {
+    echo -e "${STEPS} Checking memory boundary (4G-only package)..."
+
+    local _node="" _reg="" _val=0
+    for _node in /proc/device-tree/memory*; do
+        [[ -e "${_node}/reg" ]] && break
+        _node=""
+    done
+    [[ -n "${_node}" ]] || error_msg "Cannot read /proc/device-tree/memory*/reg"
+
+    _reg="$(od -An -tx1 -N16 "${_node}/reg" 2>/dev/null | tr -d ' \n')"
+    [[ ${#_reg} -ge 32 ]] || error_msg "Unexpected memory reg layout: [ ${_reg} ]"
+    _val=$((0x${_reg:24:8}))
+
+    echo -e "${INFO} Running dtb memory boundary : 0x$(printf '%x' ${_val})  ($((_val / 1024 / 1024)) MiB)"
+    echo -e "${INFO} Required 4G safe boundary   : 0x$(printf '%x' ${MEM_4G_SAFE})  ($((MEM_4G_SAFE / 1024 / 1024)) MiB)"
+
+    if [[ "${_val}" -eq "${MEM_4G_SAFE}" ]]; then
+        echo -e "${SUCCESS} Memory boundary OK: the BL31/TEE zone is unreachable."
+        return 0
+    fi
+
+    if [[ "${_val}" -gt "${MEM_4G_SAFE}" ]]; then
+        echo -e "${ERROR} Boundary is above the vendor safe limit -- the kernel CMA sits on the BL31/TEE zone."
+        echo -e "${INFO}  Copying several GB into such a layout corrupts the secure world and the"
+        echo -e "${INFO}  core system processes die mid-install. This is a known 4G failure mode."
+    else
+        echo -e "${ERROR} Boundary is below the 4G value -- this package only supports 4G-RAM installs."
+    fi
+    echo -e "${OPTIONS} Fix: put the 4G dtb (memory reg = <0x00 0x00 0x00 0xf5700000>) into"
+    echo -e "${OPTIONS}      /boot/dtb/amlogic/ and reboot, then run this installer again."
+
+    [[ "${force_memory}" == "yes" ]] || error_msg "Refusing to install: not a supported 4G memory layout."
+    echo -e "${ERROR} --force-memory given: continuing anyway (memory guard still active)."
+}
+
+#===============================================================================================
+# [4G-PROD] 拷贝期间的内存保护：收紧脏页上限，避免页缓存/回写把内存推高
+#===============================================================================================
+mem_guard_begin() {
+    mem_guard_saved="$(cat /proc/sys/vm/dirty_bytes 2>/dev/null) $(cat /proc/sys/vm/dirty_background_bytes 2>/dev/null) $(cat /proc/sys/vm/dirty_ratio 2>/dev/null) $(cat /proc/sys/vm/dirty_background_ratio 2>/dev/null)"
+    echo 67108864 >/proc/sys/vm/dirty_bytes 2>/dev/null || true
+    echo 16777216 >/proc/sys/vm/dirty_background_bytes 2>/dev/null || true
+    echo 5 >/proc/sys/vm/dirty_ratio 2>/dev/null || true
+    echo 2 >/proc/sys/vm/dirty_background_ratio 2>/dev/null || true
+    echo -e "${INFO} Dirty-page cap set to 64MiB (previous: ${mem_guard_saved})"
+}
+
+mem_guard_end() {
+    set -- ${mem_guard_saved}
+    [[ -n "${1}" ]] && echo "${1}" >/proc/sys/vm/dirty_bytes 2>/dev/null
+    [[ -n "${2}" ]] && echo "${2}" >/proc/sys/vm/dirty_background_bytes 2>/dev/null
+    [[ -n "${3}" ]] && echo "${3}" >/proc/sys/vm/dirty_ratio 2>/dev/null
+    [[ -n "${4}" ]] && echo "${4}" >/proc/sys/vm/dirty_background_ratio 2>/dev/null
+    echo -e "${INFO} Dirty-page settings restored."
+}
+
+# Check dependencies
+check_depends() {
+    echo -e "${STEPS} Checking dependencies..."
+
+    is_missing="0"
+    necessary_packages=("tar" "hexdump" "mkfs.vfat" "mkfs.ext4" "mkfs.btrfs" "parted" "losetup" "fdisk" "lsblk")
+    install_packages=("tar" "bsdextrautils" "dosfstools" "e2fsprogs" "btrfs-progs" "parted" "mount" "fdisk" "util-linux")
+
+    i="1"
+    for package in ${necessary_packages[*]}; do
+        [[ -n "$(which "${package}" 2>/dev/null)" ]] || is_missing="1"
+        ((i++))
+    done
+
+    if [[ "${is_missing}" -eq "1" ]]; then
+        echo -e "${INFO} Installing required dependencies."
+        sudo apt-get update
+        sudo apt-get install -y ${install_packages[*]}
+        [[ "${?}" -eq "0" ]] || error_msg "Failed to install dependencies."
+    else
+        echo -e "${INFO} All dependencies are available. Proceeding with installation."
+    fi
+}
+
+# Initialize all variables
+init_var() {
+    echo -e "${STEPS} Initializing environment..."
+
+    # Strip patch-only long options before getopt sees them
+    local _keep=()
+    for _arg in "${@}"; do
+        if [[ "${_arg}" == "--force-memory" ]]; then
+            force_memory="yes"
+        else
+            _keep+=("${_arg}")
+        fi
+    done
+    set -- ${_keep[@]+"${_keep[@]}"}
+
+    # If followed by [ : ], the option requires a parameter value
+    get_all_ver="$(getopt "m:a:l:y:d:" "${@}")"
+
+    while [[ -n "${1}" ]]; do
+        case "${1}" in
+        -m | --Mainline_u-boot)
+            if [[ -n "${2}" ]]; then
+                [[ "${2}" == "yes" ]] && auto_mainline_uboot="yes" || auto_mainline_uboot="no"
+                shift
+            else
+                error_msg "Invalid -m parameter [ ${2} ]!"
+            fi
+            ;;
+        -a | --Ampart_tool)
+            if [[ -n "${2}" ]]; then
+                [[ "${2}" == "yes" ]] && use_ampart="yes" || use_ampart="no"
+                shift
+            else
+                error_msg "Invalid -a parameter [ ${2} ]!"
+            fi
+            ;;
+        -l | --List_all)
+            if [[ -n "${2}" ]]; then
+                [[ "${2}" == "yes" ]] && show_all_list="yes" || show_all_list="no"
+                shift
+            else
+                error_msg "Invalid -l parameter [ ${2} ]!"
+            fi
+            ;;
+        -y | --Yes)
+            auto_yes="yes"
+            ;;
+        -d | --Dtb_file)
+            if [[ -n "${2}" ]]; then
+                FDTFILE_OVERRIDE="${2}"
+                shift
+            else
+                error_msg "Invalid -d parameter [ ${2} ]!"
+            fi
+            ;;
+        *)
+            error_msg "Invalid option [ ${1} ]!"
+            ;;
+        esac
+        shift
+    done
+
+    # Display settings results
+    echo -e "${INFO} Use mainline u-boot: [ ${auto_mainline_uboot} ]"
+    echo -e "${INFO} Use ampart tool: [ ${use_ampart} ]"
+    echo -e "${INFO} Show all devices: [ ${show_all_list} ] (deprecated, device menu removed)"
+    echo -e "${INFO} Non-interactive : [ ${auto_yes} ]"
+
+    # ==================== [4G-PROD] 机型自动识别（不再交互选型） ====================
+    [[ -s "${ophub_release_file}" ]] || error_msg "Missing configuration file: [ ${ophub_release_file} ]"
+    source "${ophub_release_file}"
+    MODEL_NAME="${MODEL_NAME:-Unknown}"
+    AMLOGIC_SOC="${SOC:-unknown}"
+    boxid="${MODEL_ID:-0}"
+    : "${AMLOGIC_SOC:=unknown}"
+    # ophub-release 里的启动器字段存的是完整路径，这里只取文件名（空值保持为空）
+    MAINLINE_UBOOT="${MAINLINE_UBOOT##*/}"
+    BOOTLOADER_IMG="${BOOTLOADER_IMG##*/}"
+    UBOOT_OVERLOAD="${UBOOT_OVERLOAD##*/}"
+    echo -e "${INFO} Model ID: [ ${boxid} ]  Model Name: [ ${MODEL_NAME} ]"
+    echo -e "${INFO} SoC: [ ${AMLOGIC_SOC} ]  Family: [ ${FAMILY:-unknown} ]"
+
+    # 识别 u-boot overload 文件（原版靠机型数据库给，这里从 /boot 里找）
+    if [[ -z "${UBOOT_OVERLOAD}" ]]; then
+        for _f in /boot/u-boot-*.bin /boot/u-boot-*.bin.sd.bin; do
+            [[ -f "${_f}" ]] || continue
+            UBOOT_OVERLOAD="$(basename "${_f}")"
+            echo -e "${INFO} Detected u-boot overload: [ ${UBOOT_OVERLOAD} ]"
+            break
+        done
+    fi
+
+    # 识别「系统当前正在使用的 dtb」
+    detect_running_dtb
+
+    # Check if the ${fnnas_conf} file exists
+    if [[ -f "${fnnas_conf}" ]]; then
+        source "${fnnas_conf}"
+    else
+        # Set root partition size limit (Unit: GiB)
+        echo "rootfs_limit_gib=\"16\"" >"${fnnas_conf}"
+        echo "rootfs_resize=\"yes\"" >>"${fnnas_conf}"
+        rootfs_limit_gib="16"
+        rootfs_resize="yes"
+    fi
+    # Ensure variables are set
+    [[ -n "${rootfs_limit_gib}" ]] || rootfs_limit_gib="16"
+    [[ -n "${rootfs_resize}" ]] || rootfs_resize="yes"
+    MG="${rootfs_limit_gib}GiB"
+
+    # [4G-PROD] 机型数据库已删除（不再需要 /etc/model_database.conf）
+
+    # Check if the current system is running from eMMC
+    root_devname="$(df / | tail -n1 | awk '{print $1}' | awk -F '/' '{print substr($3, 1, length($3)-2)}')"
+    if lsblk -l | grep -E "^${root_devname}boot0" >/dev/null; then
+        error_msg "System is already running from eMMC!"
+    fi
+
+    # Find eMMC disk with boot0 partition
+    install_emmc="$(lsblk -l -o NAME | grep -oE '(mmcblk[0-9]?boot0)' | sed "s/boot0//g")"
+    # Find eMMC disk without boot0 partition
+    [[ -z "${install_emmc}" ]] && install_emmc="$(lsblk -l -o NAME | grep -oE '(mmcblk[0-9]?)' | grep -vE ^${root_devname} | sort -u)"
+    # Check if eMMC exists
+    [[ -z "${install_emmc}" ]] && error_msg "No eMMC storage found on this device!"
+    # eMMC device path
+    DEV_EMMC="/dev/${install_emmc}"
+    echo -e "${INFO} eMMC device: [ ${DEV_EMMC} ]"
+
+    # Create installation preprocessing directory
+    DIR_INSTALL="${tmp_path}/install"
+    [[ -d "${DIR_INSTALL}" ]] && rm -rf ${DIR_INSTALL}
+    mkdir -p ${DIR_INSTALL} && chmod 777 ${tmp_path}
+
+    # Regenerate new machine-id
+    rm -f /etc/machine-id /var/lib/dbus/machine-id
+    dbus-uuidgen --ensure=/etc/machine-id
+    dbus-uuidgen --ensure
+
+    # Generate new BOOT_UUID
+    BOOT_UUID="$(cat /proc/sys/kernel/random/uuid)"
+    [[ -z "${BOOT_UUID}" ]] && BOOT_UUID="$(uuidgen)"
+    [[ -z "${BOOT_UUID}" ]] && error_msg "The uuidgen is invalid, cannot continue."
+    FAT_ID_RAW=$(echo "${BOOT_UUID}" | tr -d '-' | cut -c1-8)
+    FAT_ID_FSTAB=$(echo "${FAT_ID_RAW}" | awk '{print toupper(substr($0,1,4) "-" substr($0,5,4))}')
+    # Generate new ROOTFS_UUID
+    ROOTFS_UUID="$(cat /proc/sys/kernel/random/uuid)"
+    [[ -z "${ROOTFS_UUID}" ]] && ROOTFS_UUID="$(uuidgen)"
+    [[ -z "${ROOTFS_UUID}" ]] && error_msg "The new UUID is invalid, cannot continue."
+
+    # Get kernel TEXT_OFFSET, For u-boot.ext and u-boot.emmc
+    # With TEXT_OFFSET patch is [ 0108 ], without TEXT_OFFSET patch is [ 0000 ] and need to ues [ UBOOT_OVERLOAD ] file.
+    NEED_OVERLOAD="yes"
+    [[ "$(hexdump -n 15 -x "/boot/zImage" 2>/dev/null | head -n 1 | awk '{print $7}')" == "0108" ]] && NEED_OVERLOAD="no"
+}
+
+# Project repository:   https://github.com/7Ji/ampart
+# Download from:        https://github.com/7Ji/ampart/releases/download/v1.2/ampart-v1.2-aarch64-static.gz
+# Function description: ampart is a partitioning tool which can modify the proprieary partition table on internal eMMC.
+ampart_tool() {
+    # declare the partition layout
+    local snapshot_expected='data::-1:4'
+
+    # Note there's no quote around ${snapshot_expected}
+    ampart "${DEV_EMMC}" --mode dclone ${snapshot_expected} &>/dev/null
+    if ((${?})); then
+        # Handle the situation where ampart fails to change the layout
+        return 1
+    fi
+
+    local log="$(ampart "${DEV_EMMC}" --mode dsnapshot 2>/dev/null)"
+    if ((${?})); then
+        # Handle the situation where ampart fails to read the new partitions
+        return 2
+    fi
+
+    local snapshots
+    readarray -d $'\n' -t snapshots <<<"${log}"
+
+    # compare snapshots, 0 here refers to the decimal one
+    if [[ "${snapshots[0]}" == "${snapshot_expected}" ]]; then
+        # Successfully written the partitions
+        return 0
+    else
+        # Result partitions different, maybe should handle it
+        return 3
+    fi
+}
+
+
+# Show partition options menu
+show_partition_menu() {
+    cat <<EOF
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │  Remaining disk space is greater than ${MG}.                           │
+  ├───────────┬────────────────────────────────────────────────────────────┤
+  │  Optional │ Description                                                │
+  ├───────────┼────────────────────────────────────────────────────────────┤
+  │     1     │ Rootfs partition limit to ${MG}.                           │
+  │     2     │ [default] Rootfs partition expand to full disk (100%).     │
+  │     3     │ Retain current Rootfs size (Preserve P3 Data).             │
+  │    ≥16    │ Enter a number (GiB) to specify Rootfs partition size.     │
+  └───────────┴────────────────────────────────────────────────────────────┘
+EOF
+}
+
+# Determine partition sizes
+partition_sizing() {
+    # Use the ampart partition tool
+    AMPART_STATUS="no"
+    [[ -x "/usr/bin/ampart" && "${use_ampart}" == "yes" ]] && {
+        ampart_tool
+        [[ "${?}" -eq "0" ]] && AMPART_STATUS="yes" && echo -e "${STEPS} Successfully partitioned internal eMMC with amaprt."
+    }
+
+    # Set partition size (Unit: MiB)
+    if [[ "${AMPART_STATUS}" == "yes" ]]; then
+        BLANK1="117" # After using the ampart to part disk, space after [ 117 MiB ] could be used.
+        BOOT="512"
+        BLANK2="0"
+    elif [[ "${AMLOGIC_SOC}" == "s912" && "${boxid}" -eq "213" ]]; then
+        BLANK1="700" # OneCloudPro-V1.2
+        BOOT="512"
+        BLANK2="220"
+    elif [[ "${AMLOGIC_SOC}" == "s912" && "${boxid}" -eq "214" ]]; then
+        BLANK1="256" # new OneCloudPro-V1.2 based on base image android_tv_onethingcloud-money-maker-pro-3rd-s912.tar.xz
+        BOOT="256"
+        BLANK2="0"
+    elif [[ "${AMLOGIC_SOC}" == "s912" || "${AMLOGIC_SOC}" == "s905d" ]]; then
+        BLANK1="68"
+        BOOT="512"
+        BLANK2="220"
+    elif [[ "${AMLOGIC_SOC}" == "s905x" ]]; then
+        BLANK1="700"
+        BOOT="512"
+        BLANK2="0"
+    elif [[ "${AMLOGIC_SOC}" == "s905l3a" && "${boxid}" -eq "304" ]]; then
+        BLANK1="570" # e900v22c/d: The first [ 570 MiB ] is not writable.
+        BOOT="512"
+        BLANK2="0"
+    elif [[ "${AMLOGIC_SOC}" == "s905l3a" && "${boxid}" -eq "305" ]]; then
+        BLANK1="108" # CM311-1a-YST: Must skip [ 108 MiB ]
+        BOOT="512"   # A total of [ 1024 MiB ] can be used in this block, gave up [ 1024-512=512 MiB ]
+        BLANK2="778" # Rootfs partition could be set after [ 1398 MiB ] of the total disk, Multi-backward offset 100 MiB, [ 1398-108-512=778 MiB ]
+    elif [[ "${AMLOGIC_SOC}" == "s905l3b" ]]; then
+        BLANK1="128" # https://github.com/janko888/MBH-M30xA
+        BOOT="513"   # M302A/M304A, Compatible with Android 4 and Android 9 firmware
+        BLANK2="720"
+    elif [[ "${FDTFILE}" == "meson-sm1-skyworth-lb2004-a4091.dtb" ]]; then
+        BLANK1="108" # Tencent Aurora 3Pro: Must skip [ 108 MiB ]
+        BOOT="512"   # A total of [ 768 MiB ] can be used in this block, gave up [ 768-512=256 MiB ]
+        BLANK2="562" # Rootfs partition could be set after [ 1182 MiB ] of the total disk, [ 1182-108-512=562 MiB ]
+    elif [[ "${boxid}" -eq "525" ]]; then
+        BLANK1="108" # Whale(S905X3): Must skip [ 108 MiB ]
+        BOOT="512"   # A total of [ 1024 MiB ] can be used in this block, gave up [ 1024-512=512 MiB ]
+        BLANK2="650" # Rootfs partition could be set after [ 1270 MiB ] of the total disk, [ 1270-108-512=650 MiB ]
+    elif [[ "${boxid}" -eq "409" || "${boxid}" -eq "410" ]]; then
+        BLANK1="700" # WXY-OES(A311D), WXY-OES-Plus(s922x): Must skip [ 700 MiB ]
+        BOOT="512"
+        BLANK2="0"
+    else
+        BLANK1="68"
+        BOOT="512"   # S905x3: A total of [ 1120 MiB ] can be used in this block, and the remaining [ 608 MiB ] can be used.
+        BLANK2="770" # Rootfs partition could be set after [ 1350 MiB ] of the total disk.
+    fi
+
+    # Calculate partition size limits(Unit: MiB)
+    ROOTFS_START_MiB="$((BLANK1 + BOOT + BLANK2))"
+    MAX_SIZE_MiB="$((rootfs_limit_gib * 1024))"
+    TARGET_END_MiB="$((ROOTFS_START_MiB + MAX_SIZE_MiB))"
+    # Calculate target end position in bytes
+    TARGET_END_BYTES="$((TARGET_END_MiB * 1024 * 1024))"
+
+    # Get disk size in bytes
+    DISK_SIZE_BYTES="$(lsblk -b -n -o SIZE -d "${DEV_EMMC}")"
+    [[ "${DISK_SIZE_BYTES}" =~ ^[0-9]+$ ]] || DISK_SIZE_BYTES="0"
+    [[ "${DISK_SIZE_BYTES}" -le "0" ]] && error_msg "Failed to get eMMC disk size."
+
+    # Calculate the remaining disk space size
+    FREE_SIZE_BYTES="$((DISK_SIZE_BYTES - (ROOTFS_START_MiB * 1024 * 1024)))"
+    FREE_SIZE_GiB="$((FREE_SIZE_BYTES / 1024 / 1024 / 1024))"
+    echo -e "${INFO} eMMC Disk Free Size: [ ${FREE_SIZE_GiB}GiB ]."
+
+    # Detect current P3 size if it exists
+    if lsblk "${DEV_EMMC}p3" >/dev/null 2>&1; then
+        # Get P2 size in bytes
+        P2_SIZE_BYTES="$(lsblk -b -n -o SIZE "${DEV_EMMC}p2" | head -n1)"
+        # Convert to GiB for display
+        P2_SIZE_GiB="$((P2_SIZE_BYTES / 1024 / 1024 / 1024))"
+        # Try to get exact end position from parted
+        P2_END_EXACT="$(parted -s "${DEV_EMMC}" unit B print 2>/dev/null | grep "^ 2" | awk '{print $3}' | tr -d 'B')"
+
+        # Get P3 size in bytes
+        P3_SIZE_BYTES="$(lsblk -b -n -o SIZE "${DEV_EMMC}p3" | head -n1)"
+        # Convert to GiB for display
+        P3_SIZE_GiB="$((P3_SIZE_BYTES / 1024 / 1024 / 1024))"
+    fi
+
+    # Default root end position
+    ROOTFS_END="100%"
+
+    # Select partition expansion strategy
+    if [[ "${FREE_SIZE_BYTES}" -gt "${TARGET_END_BYTES}" ]]; then
+        if [[ -n "${P2_END_EXACT}" && "${P3_SIZE_GiB}" -ge "1" ]]; then
+            show_partition_menu
+            echo -e "${INFO} Found System Partition (P2): ${P2_SIZE_GiB} GiB, Data Partition (P3): ${P3_SIZE_GiB} GiB."
+            echo -e "         Input ${IDX} to inherit current partition layout and PRESERVE data on P3."
+            echo -ne "${OPTIONS} Please Input ID(1/2/3) or Size(16 ~ ${FREE_SIZE_GiB}): "
+        else
+            show_partition_menu | grep -v '│     3     │'
+            echo -ne "${OPTIONS} Please Input ID(1/2) or Size(16 ~ ${FREE_SIZE_GiB}): "
+        fi
+        if [[ "${auto_yes}" == "yes" ]]; then
+            deskid="2"
+            echo -e "${INFO} Non-interactive (-y): defaulting to [ 2 ] = expand rootfs to full disk."
+        else
+            read deskid
+        fi
+
+        # Validate user input
+        deskid="$(echo "${deskid}" | tr -cd '0-9.' | cut -d. -f1)"
+        [[ -z "${deskid}" || ! "${deskid}" =~ ^[0-9]+$ ]] && deskid="2"
+        echo -e "${INFO} Input ID or Size: [ ${deskid} ]"
+
+        # Determine partition expansion strategy
+        if [[ "${deskid}" == "1" ]]; then
+            ROOTFS_END="${TARGET_END_MiB}MiB"
+            echo -e "${INFO} Strategy: Limit Rootfs to ${rootfs_limit_gib}GiB."
+        elif [[ "${deskid}" == "2" ]]; then
+            ROOTFS_END="100%"
+            echo -e "${INFO} Strategy: Expand Rootfs to Full Disk."
+        elif [[ "${deskid}" == "3" && -n "${P2_END_EXACT}" ]]; then
+            ROOTFS_END="${P2_END_EXACT}B"
+            echo -e "${INFO} Strategy: Keeping exact previous partition layout to preserve P3."
+        elif [[ "${deskid}" -ge "${rootfs_limit_gib}" && "${deskid}" -le "${FREE_SIZE_GiB}" ]]; then
+            CUSTOM_SIZE_MiB="$((deskid * 1024))"
+            ROOTFS_END="$((ROOTFS_START_MiB + CUSTOM_SIZE_MiB))MiB"
+            echo -e "${INFO} Strategy: Custom Rootfs size to ${deskid}GiB."
+        else
+            ROOTFS_END="100%"
+            echo -e "${INFO} Strategy: Expand Rootfs to Full Disk."
+        fi
+    fi
+}
+
+# Nuclear re-partition function
+redo_partitions() {
+    echo -e "${INFO} Re-initializing partition table..."
+
+    # Stop active LVM/RAID groups
+    vgchange -an >/dev/null 2>&1
+    dmsetup remove_all >/dev/null 2>&1
+    mdadm --stop --scan >/dev/null 2>&1
+
+    # Force unmount all partitions
+    for i in $(seq 1 16); do
+        umount -f "${DEV_EMMC}p${i}" >/dev/null 2>&1
+        umount -l "${DEV_EMMC}p${i}" >/dev/null 2>&1
+    done
+
+    # Clear MBR to release kernel partition locks
+    dd if=/dev/zero of="${DEV_EMMC}" bs=512 count=1 conv=fsync 2>/dev/null
+    sync
+    partprobe "${DEV_EMMC}" 2>/dev/null
+    sleep 3
+
+    # Recreate partitions
+    parted -s "${DEV_EMMC}" mklabel msdos
+    parted -s "${DEV_EMMC}" mkpart primary fat32 $((BLANK1))MiB $((BLANK1 + BOOT - 1))MiB
+    parted -s "${DEV_EMMC}" mkpart primary btrfs ${ROOTFS_START_MiB}MiB ${ROOTFS_END}
+}
+
+# Create eMMC partitions
+create_partition() {
+    cd /
+    echo -e "${STEPS} Creating eMMC partitions..."
+
+    # Backup the bootloader (required for system recovery)
+    [[ -d "/usr/lib/u-boot" ]] || mkdir -p /usr/lib/u-boot
+    MYBOX_UBOOT="/usr/lib/u-boot/mybox-bootloader.img"
+    if [[ ! -f "${MYBOX_UBOOT}" ]]; then
+        echo -e "${INFO} Backing up the default bootloader."
+        dd if="${DEV_EMMC}" of="${MYBOX_UBOOT}" bs=1M count=4 conv=fsync
+        [[ "${?}" -eq "0" ]] || error_msg "Using dd to backup [ ${MYBOX_UBOOT} ] failed."
+    else
+        MAGIC_SIG="$(head -c 512 "${MYBOX_UBOOT}" 2>/dev/null | tail -c 2 | hexdump -e '1/1 "%02x"' 2>/dev/null || true)"
+        if [[ "${MAGIC_SIG}" != "55aa" ]]; then
+            echo -e "${INFO} Existing backup is invalid (No 55aa signature). Re-backing up..."
+            dd if="${DEV_EMMC}" of="${MYBOX_UBOOT}" bs=1M count=4 conv=fsync
+            [[ "${?}" -eq "0" ]] || error_msg "Using dd to backup [ ${MYBOX_UBOOT} ] failed."
+        else
+            echo -e "${INFO} Bootloader backup file [ ${MYBOX_UBOOT} ] already exists."
+        fi
+    fi
+
+    echo -e "${INFO} Stopping active LVM/RAID groups..."
+
+    # Stop active LVM/RAID groups
+    vgchange -an >/dev/null 2>&1
+    dmsetup remove_all >/dev/null 2>&1
+    mdadm --stop --scan >/dev/null 2>&1
+
+    # Unmount all eMMC partitions
+    for i in $(seq 1 16); do
+        if lsblk "${DEV_EMMC}p${i}" >/dev/null 2>&1; then
+            umount -f "${DEV_EMMC}p${i}" >/dev/null 2>&1
+            umount -l "${DEV_EMMC}p${i}" >/dev/null 2>&1
+        fi
+    done
+
+    # Try to wipe existing filesystem signatures
+    if command -v wipefs >/dev/null 2>&1; then
+        # Wipe first two partitions only (Do NOT wipe the main device/MBR)
+        for i in 1 2; do
+            [[ -b "${DEV_EMMC}p${i}" ]] && wipefs -a "${DEV_EMMC}p${i}" >/dev/null 2>&1
+        done
+    fi
+
+    sync
+    partprobe "${DEV_EMMC}" 2>/dev/null
+    sleep 3
+
+    # Clear BOOT and ROOTFS partitions (preserve P3+)
+    echo -e "${INFO} Removing BOOT and ROOTFS partitions (p1, p2)..."
+    for i in 1 2; do
+        if lsblk "${DEV_EMMC}p${i}" >/dev/null 2>&1; then
+            parted -s ${DEV_EMMC} rm ${i}
+            [[ "${?}" -eq "0" ]] || error_msg "Failed to delete partition [ ${i} ]."
+            echo -e "${INFO} Partition ${i} deleted."
+        fi
+    done
+
+    echo -e "${INFO} Creating partitions..."
+    if ! parted -s "${DEV_EMMC}" print >/dev/null 2>&1; then
+        echo -e "${INFO} No partition table found. Creating msdos label."
+        parted -s "${DEV_EMMC}" mklabel msdos
+    else
+        echo -e "${INFO} Partition table exists. Trying to preserve partition 3+..."
+    fi
+
+    # Create BOOTFS partition
+    P1_RECREATED="no"
+    echo -e "${INFO} Creating BOOTFS partition..."
+    if ! parted -s "${DEV_EMMC}" mkpart primary fat32 $((BLANK1))MiB $((BLANK1 + BOOT - 1))MiB 2>/dev/null; then
+        echo -e "${INFO} Failed to create BOOTFS partition. Invoking Nuclear Re-partition..."
+        redo_partitions
+        [[ "${?}" -eq "0" ]] || error_msg "Failed to create BOOTFS partition after MBR wipe."
+        P1_RECREATED="yes"
+    fi
+
+    # Create ROOTFS partition
+    if [[ "${P1_RECREATED}" != "yes" ]]; then
+        echo -e "${INFO} Creating ROOTFS partition..."
+        if ! parted -s "${DEV_EMMC}" mkpart primary btrfs ${ROOTFS_START_MiB}MiB ${ROOTFS_END} 2>/dev/null; then
+            echo -e "${INFO} Overlap detected. Invoking Nuclear Re-partition to apply new size..."
+            redo_partitions
+            [[ "${?}" -eq "0" ]] || error_msg "Failed to create Rootfs partition after re-initialization."
+        fi
+    fi
+
+    # Notify kernel of partition table changes
+    sync
+    partprobe "${DEV_EMMC}" 2>/dev/null
+    sleep 3
+
+    # Write bootloader
+    if [[ -n "${MAINLINE_UBOOT}" && -f "/usr/lib/u-boot/${MAINLINE_UBOOT}" && "${auto_mainline_uboot}" == "yes" ]]; then
+        echo -e "${INFO} 01. Write Mainline bootloader: [ ${MAINLINE_UBOOT} ]"
+        dd if="/usr/lib/u-boot/${MAINLINE_UBOOT}" of="${DEV_EMMC}" conv=fsync bs=1 count=444
+        dd if="/usr/lib/u-boot/${MAINLINE_UBOOT}" of="${DEV_EMMC}" conv=fsync bs=512 skip=1 seek=1
+    elif [[ -n "${BOOTLOADER_IMG}" && -f "/usr/lib/u-boot/${BOOTLOADER_IMG}" ]]; then
+        echo -e "${INFO} 02. Write Android bootloader: [ ${BOOTLOADER_IMG} ]"
+        dd if="/usr/lib/u-boot/${BOOTLOADER_IMG}" of="${DEV_EMMC}" conv=fsync bs=1 count=444
+        dd if="/usr/lib/u-boot/${BOOTLOADER_IMG}" of="${DEV_EMMC}" conv=fsync bs=512 skip=1 seek=1
+    elif [[ -n "${MYBOX_UBOOT}" && -f "${MYBOX_UBOOT}" ]]; then
+        echo -e "${INFO} 03. Write the mybox bootloader: [ ${MYBOX_UBOOT} ]"
+        dd if="${MYBOX_UBOOT}" of="${DEV_EMMC}" conv=fsync bs=1 count=444
+        dd if="${MYBOX_UBOOT}" of="${DEV_EMMC}" conv=fsync bs=512 skip=1 seek=1 count=8191
+    fi
+    [[ "${?}" -eq "0" ]] || error_msg "Failed to write bootloader using [ dd ]."
+
+    # Set the MBR Disk Signature to match FAT_ID_RAW for PARTUUID consistency
+    echo "label-id: 0x${FAT_ID_RAW}" | sfdisk "${DEV_EMMC}" >/dev/null 2>&1
+    sync && sleep 3
+}
+
+# Copy bootfs partition files
+copy_bootfs() {
+    cd /
+    echo -e "${STEPS} Processing BOOTFS partition..."
+
+    PART_BOOT="${DEV_EMMC}p1"
+
+    if grep -q ${PART_BOOT} /proc/mounts; then
+        echo -e "${INFO} Unmounting BOOT partition."
+        umount -f ${PART_BOOT}
+        [[ "${?}" -eq "0" ]] || error_msg "Failed to umount [ ${PART_BOOT} ]."
+    fi
+
+    echo -e "${INFO} Formatting BOOTFS partition..."
+    sleep 1
+    mkfs.vfat -F 32 -i "${FAT_ID_RAW}" -n "BOOT_EMMC" ${PART_BOOT}
+    [[ "${?}" -eq "0" ]] || error_msg "Failed to format BOOTFS with [ mkfs.vfat ]."
+
+    mount -o rw ${PART_BOOT} ${DIR_INSTALL}
+    [[ "${?}" -eq "0" ]] || error_msg "Failed to mount BOOTFS partition."
+
+    echo -e "${INFO} Copying BOOTFS partition data..."
+    cp -rf /boot/* ${DIR_INSTALL}
+    # Remove useless files
+    rm -rf ${DIR_INSTALL}/'System Volume Information'
+    rm -f ${DIR_INSTALL}/s9*
+    rm -f ${DIR_INSTALL}/aml*
+    # Replace eMMC boot script files
+    [[ -f "${DIR_INSTALL}/boot-emmc.scr" ]] && mv -f ${DIR_INSTALL}/boot-emmc.scr ${DIR_INSTALL}/boot.scr
+    [[ -f "${DIR_INSTALL}/boot-emmc.cmd" ]] && mv -f ${DIR_INSTALL}/boot-emmc.cmd ${DIR_INSTALL}/boot.cmd
+    [[ -f "${DIR_INSTALL}/boot-emmc.ini" ]] && mv -f ${DIR_INSTALL}/boot-emmc.ini ${DIR_INSTALL}/boot.ini
+    [[ -f "${DIR_INSTALL}/boot.ini" ]] && sed -i "s|u-boot.ext|u-boot.emmc|g" ${DIR_INSTALL}/boot.ini
+
+    # Set rootfs mount string for boot config
+    uenv_mount_string="UUID=${ROOTFS_UUID} rootflags=compress=zstd:1 rootfstype=btrfs"
+
+    # Update [ /boot/uEnv.txt ] settings
+    uenv_conf_file="${DIR_INSTALL}/uEnv.txt"
+    [[ -f "${uenv_conf_file}" ]] && {
+        echo -e "${INFO} Updating [ uEnv.txt ] file."
+        BOOT_CONF="uEnv.conf"
+        sed -i "s|root=.*console=ttyAML0|root=${uenv_mount_string} console=ttyAML0|g" ${uenv_conf_file}
+        # [4G-PROD] 不改写 dtb 引用：/boot 里的 dtb 就是当前运行的那个，直接带过去
+    }
+
+    # Update [ /boot/extlinux/extlinux.conf ] settings
+    boot_extlinux_file="${DIR_INSTALL}/extlinux/extlinux.conf"
+    [[ -f "${boot_extlinux_file}" ]] && {
+        echo -e "${INFO} Updating [ extlinux.conf ] file."
+        BOOT_CONF="extlinux.conf"
+        sed -i "s|root=.*console=ttyAML0|root=${uenv_mount_string} console=ttyAML0|g" ${boot_extlinux_file}
+        # [4G-PROD] 同上：不动 dtb 引用
+    }
+
+    # Edit the fnEnv.txt
+    fnenv_conf_file="${DIR_INSTALL}/fnEnv.txt"
+    [[ -f "${fnenv_conf_file}" ]] && {
+        sed -i "s|\(fdtfile=.*\/\)[^/]*$|\1${FDTFILE}|g" ${fnenv_conf_file}
+        sed -i "s|^instdisk_bootuuid=.*|instdisk_bootuuid=${FAT_ID_RAW}-01|g" ${fnenv_conf_file}
+        sed -i "s|^instdisk_rootuuid=.*|instdisk_rootuuid=${FAT_ID_RAW}-02|g" ${fnenv_conf_file}
+    }
+
+    # Copy u-boot.ext and u-boot.emmc
+    # [4G-PROD] 放宽条件：只要 BOOTFS 里有 u-boot.ext 就生成 u-boot.emmc（eMMC 启动必需）
+    if [[ "${NEED_OVERLOAD}" == "yes" || "${auto_mainline_uboot}" == "yes" ]]; then
+        if [[ -f "${DIR_INSTALL}/u-boot.ext" ]]; then
+            echo -e "${INFO} Preparing u-boot.emmc from u-boot.ext"
+            cp -f "${DIR_INSTALL}/u-boot.ext" "${DIR_INSTALL}/u-boot.emmc"
+        elif [[ -n "${UBOOT_OVERLOAD}" && -f "${DIR_INSTALL}/${UBOOT_OVERLOAD}" ]]; then
+            echo -e "${INFO} Copying [ ${UBOOT_OVERLOAD} ] to u-boot.ext / u-boot.emmc"
+            cp -f "${DIR_INSTALL}/${UBOOT_OVERLOAD}" "${DIR_INSTALL}/u-boot.ext"
+            cp -f "${DIR_INSTALL}/${UBOOT_OVERLOAD}" "${DIR_INSTALL}/u-boot.emmc"
+        else
+            error_msg "No u-boot.ext and no [ ${UBOOT_OVERLOAD:-overload} ] in BOOTFS, eMMC will not boot."
+        fi
+        chmod +x "${DIR_INSTALL}/u-boot.ext" 2>/dev/null || true
+        chmod +x "${DIR_INSTALL}/u-boot.emmc" 2>/dev/null || true
+        echo -e "${SUCCESS} u-boot.emmc ready ($(stat -c%s "${DIR_INSTALL}/u-boot.emmc" 2>/dev/null) B)"
+    fi
+
+    sync && sleep 3
+    umount -f ${DIR_INSTALL}
+    [[ "${?}" -eq "0" ]] || error_msg "Failed to umount [ ${DIR_INSTALL} ]."
+}
+
+# Copy rootfs partition files
+copy_rootfs() {
+    cd /
+    echo -e "${STEPS} Processing ROOTFS partition..."
+
+    PART_ROOT="${DEV_EMMC}p2"
+
+    if grep -q ${PART_ROOT} /proc/mounts; then
+        echo -e "${INFO} Unmounting ROOT partition."
+        umount -f ${PART_ROOT}
+        [[ "${?}" -eq "0" ]] || error_msg "Failed to umount [ ${PART_ROOT} ]."
+    fi
+
+    echo -e "${INFO} Formatting ROOTFS partition..."
+    mkfs.btrfs -f -U ${ROOTFS_UUID} -L "ROOTFS_EMMC" -m single ${PART_ROOT}
+    [[ "${?}" -eq "0" ]] || error_msg "Failed to format ROOTFS with [ mkfs.btrfs ]"
+
+    mount -t btrfs -o compress=zstd:1 ${PART_ROOT} ${DIR_INSTALL}
+    [[ "${?}" -eq "0" ]] || error_msg "Failed to mount ROOTFS."
+
+    echo -e "${INFO} Copying ROOTFS partition data..."
+    # Create relevant directories
+    mkdir -p ${DIR_INSTALL}/{boot/,dev/,media/,mnt/,proc/,run/,sys/,tmp/}
+    chmod 1777 ${DIR_INSTALL}/tmp
+    # Copy the relevant directory
+    COPY_SRC="etc home opt root selinux srv usr var"
+    for src in ${COPY_SRC}; do
+        if [[ -d "${src}" ]]; then
+            echo -e "${INFO} Copying [ ${src} ] ..."
+            tar -cf - ${src} | (
+                cd ${DIR_INSTALL}
+                tar -xpf -
+            )
+            # [4G-PROD] 检查管道两端退出码（tar 打包侧 1 = 文件读取时被改动，运行中系统正常）
+            _st=(${PIPESTATUS[@]})
+            [[ "${_st[0]:-0}" -le "1" ]] || error_msg "Packing [ ${src} ] failed (rc=${_st[0]})."
+            [[ "${_st[1]:-0}" -eq "0" ]] || error_msg "Unpacking [ ${src} ] failed (rc=${_st[1]})."
+            sync
+        fi
+    done
+
+    # [4G-PROD] 体积核对：源与目标必须一致，否则说明拷贝不完整
+    echo -e "${STEPS} Verifying copied data..."
+    _verify_bad="no"
+    _tol=16777216
+    for src in ${COPY_SRC}; do
+        [[ -d "${src}" ]] || continue
+        _s="$(du -sb "/${src}" 2>/dev/null | awk '{print $1}')"
+        _t="$(du -sb "${DIR_INSTALL}/${src}" 2>/dev/null | awk '{print $1}')"
+        if [[ -z "${_s}" || -z "${_t}" ]]; then
+            echo -e "${ERROR} [ ${src} ] size check skipped (du failed)"
+            _verify_bad="yes"
+            continue
+        fi
+        _d=$((_s - _t))
+        [[ "${_d}" -lt 0 ]] && _d=$((-_d))
+        if [[ "${_d}" -gt "${_tol}" ]]; then
+            echo -e "${ERROR} [ ${src} ] size mismatch: source=${_s} target=${_t} (diff=${_d} B)"
+            _verify_bad="yes"
+        else
+            echo -e "${SUCCESS} [ ${src} ] verified (${_s} B)"
+        fi
+    done
+    [[ "${_verify_bad}" == "yes" ]] && echo -e "${ERROR} WARNING: some directories differ, ROOTFS may be incomplete!"
+    # Create relevant symbolic link
+    ln -sf usr/bin ${DIR_INSTALL}/bin
+    ln -sf usr/lib ${DIR_INSTALL}/lib
+    ln -sf usr/sbin ${DIR_INSTALL}/sbin
+
+    # [4G-PROD] 保证装出来的系统里也是这个生产版安装脚本
+    if [[ -f /usr/sbin/fnnas-install ]]; then
+        install -m 0755 /usr/sbin/fnnas-install "${DIR_INSTALL}/usr/sbin/fnnas-install"
+        echo -e "${SUCCESS} Production fnnas-install copied into the target rootfs."
+    else
+        echo -e "${ERROR} /usr/sbin/fnnas-install not found on this system, skipped."
+    fi
+
+    echo -e "${INFO} Generating fstab file."
+    rm -f ${DIR_INSTALL}/etc/fstab
+    cat >${DIR_INSTALL}/etc/fstab <<EOF
+# <file system>   <mount point>   <type>   <options>   <dump>   <pass>
+UUID=${ROOTFS_UUID}       /       btrfs   defaults,noatime,compress=zstd:1        0       1
+UUID=${FAT_ID_FSTAB}      /boot   vfat    defaults,noatime,errors=remount-ro      0       2
+# [4G-PROD] 不挂 tmpfs /tmp：与已验证的产线状态一致（避免占用宝贵内存）
+
+EOF
+
+    echo -e "${INFO} Updating release file parameters."
+    ophub_config_file="${DIR_INSTALL}${ophub_release_file}"
+    sed -i "s|^MODEL_ID=.*|MODEL_ID='${boxid}'|g" ${ophub_config_file}
+    sed -i "s|^MODEL_NAME=.*|MODEL_NAME='${MODEL_NAME}'|g" ${ophub_config_file}
+    sed -i "s|^SOC=.*|SOC='${AMLOGIC_SOC}'|g" ${ophub_config_file}
+    sed -i "s|^FDTFILE=.*|FDTFILE='${FDTFILE}'|g" ${ophub_config_file}
+    sed -i "s|^MAINLINE_UBOOT=.*|MAINLINE_UBOOT='/usr/lib/u-boot/${MAINLINE_UBOOT}'|g" ${ophub_config_file}
+    sed -i "s|^BOOTLOADER_IMG=.*|BOOTLOADER_IMG='/usr/lib/u-boot/${BOOTLOADER_IMG}'|g" ${ophub_config_file}
+    sed -i "s|^UBOOT_OVERLOAD=.*|UBOOT_OVERLOAD='${UBOOT_OVERLOAD}'|g" ${ophub_config_file}
+    sed -i "s|^ROOTFS_TYPE=.*|ROOTFS_TYPE='btrfs'|g" ${ophub_config_file}
+    sed -i "s|^BOOT_CONF=.*|BOOT_CONF='${BOOT_CONF}'|g" ${ophub_config_file}
+    sed -i "s|^DISK_TYPE=.*|DISK_TYPE='emmc'|g" ${ophub_config_file}
+    sed -i "s|^MLUBOOT_STATUS=.*|MLUBOOT_STATUS='${auto_mainline_uboot}'|g" ${ophub_config_file}
+    sed -i "s|^AMPART_STATUS=.*|AMPART_STATUS='${AMPART_STATUS}'|g" ${ophub_config_file}
+
+    # Disable rootfs auto-resize on first boot
+    echo -e "${INFO} Updating FnNAS configuration file."
+    fnnas_conf_file="${DIR_INSTALL}${fnnas_conf}"
+    sed -i "s|^rootfs_resize=.*|rootfs_resize=\"no\"|g" "${fnnas_conf_file}"
+
+    sync && sleep 3
+    umount -f ${DIR_INSTALL}
+    [[ "${?}" -eq "0" ]] || error_msg "Failed to umount [ ${DIR_INSTALL} ]."
+}
+
+# Check script permission
+[[ "$(id -u)" == "0" ]] || error_msg "Please run this script as root: [ sudo $0 ]"
+# ============ [4G-PROD] 内存保护自举：进受限 cgroup 后再干活 ============
+# 4G 机型上 CMA 落在内存顶部，靠安全区太近；必须显式限住页缓存，
+# 否则安装拷贝 5GB 时会把内存推到安全区 -> 核心进程猝死 -> 安装失败。
+# 注意：这里不能用 exec，systemd-run 失败时连脚本一起带走就查不出来了。
+if [[ "${FNNAS_MEM_BOUNDED}" != "1" ]]; then
+    SELF_PATH="$(readlink -f "${BASH_SOURCE[0]:-$0}" 2>/dev/null || echo "$0")"
+    if command -v systemd-run >/dev/null 2>&1 && [[ -d /sys/fs/cgroup ]]; then
+        echo -e "${INFO} Memory guard: entering cgroup (MemoryHigh=${mem_guard_high} MemoryMax=${mem_guard_max})"
+        export FNNAS_MEM_BOUNDED="1"
+        if systemd-run --scope --quiet \
+            -p MemoryHigh="${mem_guard_high}" -p MemoryMax="${mem_guard_max}" -p MemorySwapMax=0 \
+            -- bash "${SELF_PATH}" "$@"; then
+            exit 0
+        else
+            _rc=$?
+            unset FNNAS_MEM_BOUNDED
+            echo -e "${ERROR} cgroup scope unavailable (rc=${_rc}); continuing WITHOUT memory cap."
+            echo -e "${ERROR} Dirty-page limits are still active, do not run other heavy jobs."
+        fi
+    else
+        echo -e "${ERROR} systemd-run unavailable; memory guard disabled (dirty limits still applied)."
+    fi
+fi
+
+echo -e "${STEPS} Installing FnNAS to eMMC..."
+
+# Check dependencies
+check_depends
+# Initialize all variables (auto-detects model + the running dtb)   [4G-PROD]
+init_var "${@}"
+# Only 4G memory layouts are supported                             [4G-PROD]
+require_4g_dtb
+# Determine partition sizes
+partition_sizing
+# Tighten dirty-page limits before any heavy write                 [4G-PROD]
+mem_guard_begin
+# Create emmc partition
+create_partition
+# Copy bootfs partition files
+copy_bootfs
+# Copy rootfs partition files
+copy_rootfs
+# Restore original vm settings                                     [4G-PROD]
+mem_guard_end
+
+echo -e "${INFO} The eMMC BOOTFS carries the same dtb the installer was running with:"
+echo -e "${INFO}   [ ${FDTFILE} ]   (memory boundary 0x$(printf '%x' ${MEM_4G_SAFE}), 4G safe layout)"
+echo -e "${SUCCESS} Installation successful. Run [ poweroff ], remove the installation media, then re-insert the power supply to boot FnNAS."
+exit 0

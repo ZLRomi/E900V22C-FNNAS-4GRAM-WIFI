@@ -1,0 +1,208 @@
+#==========================================================================
+# Description: Build FnNAS Kernel
+# Copyright (C) 2025 https://fnnas.com
+# Copyright (C) 2026 https://github.com/ophub/fnnas
+#==========================================================================
+
+name: Build FnNAS Kernel
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      fnnas_base_version:
+        description: "Select fnnas base image version"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - amlogic_1252
+          - amlogic_693
+          - rockchip_1253
+          - rockchip_692
+          - allwinner_1254
+          - allwinner_691
+      dtbs_version:
+        description: "Set kernel dtbs version"
+        required: false
+        default: "6.18.y"
+        type: choice
+        options:
+          - 6.18.y
+          - 6.12.y
+      dtbs_install:
+        description: "Install kernel dtbs files"
+        required: false
+        default: true
+        type: boolean
+      debs_repo:
+        description: "Set fnnas debs repository"
+        required: false
+        default: "ophub/fnnas"
+      debs_install:
+        description: "Install kernel debs files"
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - amlogic
+          - allwinner
+          - rockchip
+          - none
+
+env:
+  TZ: Etc/UTC
+
+jobs:
+  set-matrix:
+    runs-on: ubuntu-26.04-arm
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set build matrix based on fnnas_base_version input
+        id: set-matrix
+        run: |
+          if [[ "${{ inputs.fnnas_base_version }}" == "all" ]]; then
+            MATRIX='{"include":[{"fnnas_base_version":"amlogic_1252","dtbs_version":"6.18.y"},{"fnnas_base_version":"amlogic_693","dtbs_version":"6.12.y"},{"fnnas_base_version":"rockchip_1253","dtbs_version":"6.18.y"},{"fnnas_base_version":"rockchip_692","dtbs_version":"6.12.y"},{"fnnas_base_version":"allwinner_1254","dtbs_version":"6.18.y"},{"fnnas_base_version":"allwinner_691","dtbs_version":"6.12.y"}]}'
+          else
+            MATRIX='{"include":[{"fnnas_base_version":"${{ inputs.fnnas_base_version }}","dtbs_version":"${{ inputs.dtbs_version }}"}]}'
+          fi
+          echo "matrix=${MATRIX}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: set-matrix
+    runs-on: ubuntu-26.04-arm
+    if: ${{ github.event.repository.owner.id == github.event.sender.id }}
+    permissions:
+      contents: write
+
+    strategy:
+      matrix: ${{ fromJson(needs.set-matrix.outputs.matrix) }}
+    name: build-kernel:${{ matrix.dtbs_version }}@${{ matrix.fnnas_base_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize the build environment
+        id: init
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker rmi -f $(docker images -q) 2>/dev/null || true
+          [[ -n "${AGENT_TOOLSDIRECTORY}" ]] && sudo rm -rf "${AGENT_TOOLSDIRECTORY}"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo apt-get -y update
+          sudo apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2604-make-fnnas-depends)
+          sudo systemctl daemon-reload
+          #sudo apt-get -y full-upgrade
+          sudo apt-get -y autoremove --purge
+          sudo apt-get clean
+          sudo sed -i '/NVM_DIR/d;/skel/d' /root/{.bashrc,.profile}
+          sudo rm -rf ~/{.cargo,.dotnet,.rustup}
+          sudo timedatectl set-timezone "${TZ:-Etc/UTC}"
+          sudo ntpdate ntp.ubuntu.com 0.pool.ntp.org || true
+          sudo timedatectl set-ntp true
+          date -u
+          timedatectl status || true
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Create virtual disk for extended storage
+        id: disk
+        run: |
+          # Get available space in exact GB
+          root_avail=$(df --block-size=1G / | tail -1 | awk '{print $4}')
+          root_size=$(( root_avail - 4 ))
+          [[ "${root_size}" -gt 0 ]] || { echo "Error: Insufficient space on /: ${root_avail}G available"; exit 1; }
+
+          sudo truncate -s "${root_size}"G /root.img
+          build_dev=$(sudo losetup --find --show /root.img)
+          echo "Using /: ${root_size}G"
+
+          sudo mkfs.xfs -f -i sparse=0 -b size=4096 "${build_dev}"
+          sudo mkdir -p /builder
+          sudo mount "${build_dev}" /builder
+          sudo chown -R runner:runner /builder
+          df -Th
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Download fnnas image [ ${{ matrix.fnnas_base_version }} ]
+        id: down
+        working-directory: /builder
+        if: (!cancelled())
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Starting to download the latest FnNAS base image..."
+          fnnas_base_version="${{ matrix.fnnas_base_version }}"
+          [[ -d "fnnas" ]] || mkdir -p fnnas
+
+          latest_version=$(curl -s \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              https://api.github.com/repos/ophub/fnnas/releases?per_page=20 | \
+              jq -r --arg RTK "fnnas_base_image" \
+              --arg BOARD "${fnnas_base_version}" \
+              '[.[] | select(.tag_name | contains($RTK))] |
+              map(.assets[] | select(.name | contains($BOARD) and endswith(".img.xz"))) |
+              sort_by(.updated_at) |
+              reverse |
+              .[0] |
+              {data: .updated_at, url: .url, name: .name}')
+
+          [[ -z "${latest_version}" || "${latest_version}" == "null" ]] && {
+              echo "Error: Failed to resolve FnNAS image download URL."
+              exit 1
+          }
+
+          latest_url="$(echo ${latest_version} | jq -r '.url')"
+          fnnas_filename="$(echo ${latest_version} | jq -r '.name')"
+          echo "Downloading: ${fnnas_filename}"
+          echo "Source: ${latest_url}"
+
+          curl -fsSL \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/octet-stream" \
+              "${latest_url}" \
+              -o "fnnas/${fnnas_filename}"
+
+          [[ "${?}" -ne "0" ]] && echo "Error: Download failed." && exit 1
+
+          ln -sf /builder/fnnas ${{ github.workspace }}/fnnas
+          ln -sf /builder/fnnas /home/runner/work/_actions/ophub/fnnas/main/fnnas
+
+          echo "status=success" >> ${GITHUB_OUTPUT}
+
+      - name: Compile the FnNAS kernel
+        uses: ophub/fnnas@main
+        if: ${{ steps.down.outputs.status == 'success' && !cancelled() }}
+        with:
+          build_target: kernel
+          fnnas_path: fnnas/*.img.xz
+          debs_repo: ${{ inputs.debs_repo }}
+          dtbs_version: ${{ matrix.dtbs_version }}
+          debs_install: ${{ inputs.debs_install }}
+          dtbs_install: ${{ inputs.dtbs_install }}
+
+      - name: Upload Kernel to Release
+        uses: ophub/upload-to-releases@main
+        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        with:
+          tag: kernel_fnnas
+          artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
+          allow_updates: true
+          remove_artifacts: false
+          replaces_artifacts: true
+          make_latest: false
+          gh_token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            - FnNAS Dedicated Kernel. Based on official [.debs](https://github.com/ophub/fnnas/releases/tag/fnnas_debs) packages from `fnnas.com`,
+              and repackaged into .tar.gz format using the `rekernel` tool.
+              It is optimized for batch packaging and supports online updates via the `fnnas-update` command.
+            - FnNAS 专用内核。基于 `fnnas.com` 官方提供的 [.debs](https://github.com/ophub/fnnas/releases/tag/fnnas_debs) 安装包，
+              利用本仓库的 `rekernel` 工具重新封装为 .tar.gz 格式。
+              该内核既适用于批量打包，也支持通过 `fnnas-update` 命令进行在线更新。

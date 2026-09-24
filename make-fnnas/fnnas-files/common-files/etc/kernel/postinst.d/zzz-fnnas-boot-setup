@@ -1,0 +1,118 @@
+#!/bin/sh
+#==================================================================================================
+#
+# Function: fnNAS Kernel Auto-Completion Update Script
+# Copyright (C) 2026- https://github.com/ophub/fnnas
+#
+# Contributed by: https://github.com/yizhaoyiximh
+# Inspired by: https://github.com/ophub/fnnas/issues/584
+#
+#==================================================================================================
+
+# Get the kernel version from the first argument
+version="$1"
+# Post-update hook for fnNAS ARM64 boards: copy/link kernel files to platform-specific locations
+ophub_release_file="/etc/ophub-release"
+# Configuration file for update-initramfs
+initramfs_conf="/etc/initramfs-tools/update-initramfs.conf"
+
+# Load platform information from ophub-release file
+[ -f "${ophub_release_file}" ] && {
+    . "${ophub_release_file}" 2>/dev/null || true
+}
+# Set default values if not already defined
+PLATFORM="${PLATFORM:-unknown}"
+MODEL_ID="${MODEL_ID:-0}"
+
+# If no version is provided, use the latest kernel version available in /boot
+if [ -z "${version}" ]; then
+    version="$(ls -1 /boot/vmlinuz-* 2>/dev/null | sort -V | tail -n 1 | sed 's|/boot/vmlinuz-||')"
+fi
+# If still no version is found, exit the script
+[ -n "${version}" ] || {
+    echo "update-initramfs: fnnas: No kernel version specified or found in /boot, exiting." >&2
+    exit 0
+}
+
+echo "update-initramfs: fnnas: Platform: ${PLATFORM}, Model ID: ${MODEL_ID}, Kernel Version: ${version}" >&2
+
+# Force enable update_initramfs (may be set to 'no' by some packages)
+[ -f "${initramfs_conf}" ] && {
+    sed -i "s|^update_initramfs=.*|update_initramfs=yes|g" "${initramfs_conf}"
+}
+
+# Rebuild initramfs if missing
+update-initramfs -c -k "${version}" 2>/dev/null || true
+[ -f "/boot/initrd.img-${version}" ] && echo "update-initramfs: fnnas: initramfs rebuilt for kernel version ${version}" >&2
+
+# If uInitrd was not created but initrd.img exists, generate uInitrd via 99-uboot
+if [ -f "/boot/initrd.img-${version}" ]; then
+    /etc/initramfs/post-update.d/99-uboot "${version}" "/boot/initrd.img-${version}" 2>/dev/null || true
+    echo "update-initramfs: fnnas: uInitrd generated for kernel version ${version}" >&2
+fi
+
+# Copy or link uInitrd and kernel image based on platform
+if [ -f "/boot/uInitrd-${version}" ]; then
+    case "${PLATFORM}" in
+    allwinner)
+        (cd /boot && cp -f "uInitrd-${version}" uInitrd)
+        (cd /boot && cp -f "vmlinuz-${version}" Image)
+        echo "update-initramfs: fnnas: Copied uInitrd and kernel Image for allwinner" >&2
+        ;;
+    amlogic)
+        (cd /boot && cp -f "uInitrd-${version}" uInitrd)
+        (cd /boot && cp -f "vmlinuz-${version}" zImage)
+        echo "update-initramfs: fnnas: Copied uInitrd and kernel zImage for amlogic" >&2
+        ;;
+    rockchip)
+        (cd /boot && ln -sfn "uInitrd-${version}" uInitrd)
+        (cd /boot && ln -sfn "vmlinuz-${version}" Image)
+        echo "update-initramfs: fnnas: Linked uInitrd and kernel Image for rockchip" >&2
+        ;;
+    *)
+        echo "update-initramfs: fnnas: No specific actions for platform ${PLATFORM}" >&2
+        ;;
+    esac
+fi
+
+# Board-specific kernel file adjustments
+case "${MODEL_ID}" in
+r306 | r307)
+    [ -f "/boot/initrd.img-${version}" ] && (cd /boot && ln -sfn "initrd.img-${version}" uInitrd)
+    echo "update-initramfs: fnnas: Board-specific uInitrd symlink applied for MODEL_ID ${MODEL_ID}" >&2
+    ;;
+*)
+    echo "update-initramfs: fnnas: No specific actions for MODEL_ID ${MODEL_ID}" >&2
+    ;;
+esac
+
+# Update the kernel version in the boot config
+fnenv_conf_file="/boot/fnEnv.txt"
+[ -f "${fnenv_conf_file}" ] && {
+    sed -i \
+        -e "s|^kernelfile=.*|kernelfile=vmlinuz-${version}|g" \
+        -e "s|^initrdfile=.*|initrdfile=uInitrd-${version}|g" \
+        "${fnenv_conf_file}"
+}
+fnenv_extlinux_file="/boot/extlinux/extlinux.conf"
+[ -f "${fnenv_extlinux_file}" ] && {
+    sed -i \
+        -e "s|vmlinuz-.*|vmlinuz-${version}|g" \
+        -e "s|uInitrd-.*|uInitrd-${version}|g" \
+        "${fnenv_extlinux_file}"
+}
+
+# Update release file
+[ -f "${ophub_release_file}" ] && {
+    sed -i \
+        -e "s|^KERNEL_VERSION=.*|KERNEL_VERSION='${version}'|g" \
+        "${ophub_release_file}"
+}
+
+# Restore update_initramfs to 'no' to avoid unnecessary regeneration
+[ -f "${initramfs_conf}" ] && {
+    sed -i "s|^update_initramfs=.*|update_initramfs=no|g" "${initramfs_conf}"
+}
+
+sync
+exit 0

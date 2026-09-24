@@ -1,0 +1,1260 @@
+#!/bin/bash
+#================================================================================================
+#
+# This file is licensed under the terms of the GNU General Public
+# License version 2. This program is licensed "as is" without any
+# warranty of any kind, whether express or implied.
+#
+# This file is a part of the remake fnnas
+# https://github.com/ophub/fnnas
+#
+# Description: Automatically package FnNAS system images
+# Copyright (C) 2025~ https://fnnas.com
+# Copyright (C) 2020~ https://github.com/unifreq/openwrt_packit
+# Copyright (C) 2021~ https://github.com/ophub/amlogic-s9xxx-armbian/blob/main/CONTRIBUTORS.md
+# Copyright (C) 2026~ https://github.com/ophub/fnnas
+#
+# Command: sudo ./renas
+# Command optional parameters please refer to the source code repository
+#
+#======================================== Functions list ========================================
+#
+# error_msg          : Output error message and abort
+# process_msg        : Output process step message
+# clean_model_conf   : Clean the model configuration file
+# mount_try          : Mount a partition with retries
+# get_textoffset     : Get kernel TEXT_OFFSET
+#
+# init_var           : Initialize all variables
+# check_data         : Validate configuration data
+# find_fnnas         : Locate FnNAS base image (fnnas-arm64/*.img.xz)
+# git_pull_dir       : Clone files from a git repository
+# download_depends   : Download dependency files
+# query_kernel       : Query the latest kernel version
+# check_kernel       : Verify kernel files integrity
+# download_kernel    : Download kernel files
+#
+# confirm_version    : Confirm device and kernel configuration
+# extract_fnnas      : Extract FnNAS base image files
+# make_image         : Create FnNAS image file
+# copy_files         : Copy FnNAS system files
+# replace_kernel     : Replace kernel files
+# refactor_bootfs    : Refactor BOOTFS partition files
+# refactor_rootfs    : Refactor ROOTFS partition files
+# clean_tmp          : Clean up temporary files
+#
+# loop_make          : Build FnNAS images in a loop
+#
+#================================ Set make environment variables ================================
+#
+# Related file storage paths
+current_path="${PWD}"
+make_path="${current_path}/fnnas"
+tmp_path="${make_path}/tmp"
+out_path="${make_path}/out"
+fnnas_path="${current_path}/fnnas-arm64"
+fnnas_renas_file="*.img"
+resource_path="${current_path}/make-fnnas"
+kernel_path="${resource_path}/kernel"
+uboot_path="${resource_path}/u-boot"
+common_files="${resource_path}/fnnas-files/common-files"
+platform_files="${resource_path}/fnnas-files/platform-files"
+different_files="${resource_path}/fnnas-files/different-files"
+firmware_path="${common_files}/usr/lib/firmware"
+model_conf="${common_files}/etc/model_database.conf"
+tmp_outpath="${tmp_path}/tmp_out"
+tmp_fnnas="${tmp_path}/tmp_fnnas"
+tmp_build="${tmp_path}/tmp_build"
+tmp_aml_image="${tmp_path}/tmp_aml_image"
+[[ -d "${make_path}" ]] || mkdir -p ${make_path}
+
+# System environment information
+arch_info="$(uname -m)"
+host_release="$(cat /etc/os-release | grep '^VERSION_CODENAME=.*' | cut -d'=' -f2)"
+# Personalized settings file for special devices, e.g., [ s922x-oes-plus ]
+board_release_file="etc/fnnas-board-release.conf"
+# Custom FnNAS firmware information file
+ophub_release_file="etc/ophub-release"
+# FnNAS configuration file
+fnnas_conf="etc/fnnas.conf"
+
+# Dependency files repository
+depends_repo="https://github.com/ophub/amlogic-s9xxx-armbian"
+# U-Boot files repository
+uboot_repo="https://github.com/ophub/u-boot"
+# Firmware files repository
+firmware_repo="https://github.com/ophub/firmware"
+
+# Kernel download repository
+kernel_repo="https://github.com/ophub/fnnas"
+# Default kernel versions
+allwinner_kernel=("6.12.y" "6.18.y")
+amlogic_kernel=("6.12.y" "6.18.y")
+rockchip_kernel=("6.12.y" "6.18.y")
+# Automatically use the latest kernel version
+auto_kernel="true"
+# Initialize the kernel array
+declare -A tags_list
+
+# Amlogic u-boot series (u-boot-xxx.bin)
+uboot_meson_gxl=("p201.bin" "p212.bin" "s905x-s912.bin" "n1.bin" "r3300l.bin")
+uboot_meson_gxm=("p212.bin" "s905x-s912.bin" "zyxq.bin")
+uboot_meson_g12a=("x96max.bin" "e900v22c.bin")
+uboot_meson_g12b=("gtking.bin" "gtkingpro.bin" "gtkingpro-rev-a.bin" "s905x2-s922.bin")
+uboot_meson_sm1=("x96maxplus.bin" "ugoos-x3.bin" "tx3-qz.bin" "tx3-bz.bin" "skyworth-lb2004.bin")
+uboot_meson_gxbb=("p201.bin" "s905.bin")
+
+# Initialize the target board
+make_board="all"
+# FnNAS image size (Unit: MiB, boot_mb >= 512, root_mb >= 4096)
+boot_mb="512"
+root_mb="4096"
+# Root partition auto-expansion size (Unit: GiB)
+rootfs_expand="16"
+# Builder signature
+builder_name=""
+
+# Set font color
+STEPS="[\033[95m STEPS \033[0m]"
+INFO="[\033[94m INFO \033[0m]"
+NOTE="[\033[93m NOTE \033[0m]"
+WARNING="[\033[93m WARNING \033[0m]"
+SUCCESS="[\033[92m SUCCESS \033[0m]"
+ERROR="[\033[91m ERROR \033[0m]"
+#
+#================================================================================================
+
+error_msg() {
+    echo -e " [💔] ${1}"
+    exit 1
+}
+
+process_msg() {
+    echo -e " [🌿] ${1}"
+}
+
+clean_model_conf() {
+    [[ -f "${model_conf}" ]] || return 1
+    sed -e 's/NA//g' -e 's/NULL//g' -e 's/[ ][ ]*//g' "${model_conf}" | grep -E '^[^#].+'
+}
+
+mount_try() {
+    # Check mount parameters
+    m_type="${1}"
+    m_dev="${2}"
+    m_target="${3}"
+    [[ -n "${m_type}" && -n "${m_dev}" && -n "${m_target}" ]] || {
+        error_msg "Missing mount parameters: [ ${m_type}, ${m_dev}, ${m_target} ]"
+    }
+
+    t="1"
+    max_try="10"
+    while [[ "${t}" -le "${max_try}" ]]; do
+        # Mount according to the partition format
+        if [[ "${m_type}" == "btrfs" ]]; then
+            mount -t ${m_type} -o discard,compress=zstd:1 ${m_dev} ${m_target} 2>/dev/null
+        else
+            mount -t ${m_type} -o discard ${m_dev} ${m_target} 2>/dev/null
+        fi
+
+        # Retry on mount failure
+        if [[ "${?}" -eq 0 ]]; then
+            break
+        else
+            sync && sleep 3
+            umount -f ${m_target} 2>/dev/null
+            ((t++))
+        fi
+    done
+    [[ "${t}" -gt "${max_try}" ]] && error_msg "Failed to mount after [ ${t} ] attempts."
+}
+
+get_textoffset() {
+    vmlinuz_name="${1}"
+    need_overload="yes"
+    # With TEXT_OFFSET patch is [ 0108 ], without TEXT_OFFSET patch is [ 0000 ]
+    [[ "$(hexdump -n 15 -x "${vmlinuz_name}" 2>/dev/null | head -n 1 | awk '{print $7}')" == "0108" ]] && need_overload="no"
+}
+
+init_var() {
+    echo -e "${STEPS} Initializing variables..."
+
+    # If followed by [ : ], the option requires a parameter value
+    local options="b:r:k:a:e:s:n:"
+    parsed_args=$(getopt -o "${options}" -- "${@}")
+    [[ ${?} -ne 0 ]] && error_msg "Failed to parse command-line parameters."
+    eval set -- "${parsed_args}"
+
+    while true; do
+        case "${1}" in
+        -b | --Board)
+            if [[ -n "${2}" ]]; then
+                make_board="${2// /}"
+                shift 2
+            else
+                error_msg "Invalid -b parameter [ ${2} ]!"
+            fi
+            ;;
+        -r | --kernelRepository)
+            if [[ -n "${2}" ]]; then
+                kernel_repo="${2}"
+                shift 2
+            else
+                error_msg "Invalid -r parameter [ ${2} ]!"
+            fi
+            ;;
+        -k | --Kernel)
+            if [[ -n "${2}" ]]; then
+                oldIFS="${IFS}"
+                IFS="_"
+                allwinner_kernel=(${2})
+                amlogic_kernel=(${2})
+                rockchip_kernel=(${2})
+                specific_kernel=(${2})
+                IFS="${oldIFS}"
+                shift 2
+            else
+                error_msg "Invalid -k parameter [ ${2} ]!"
+            fi
+            ;;
+        -a | --Autokernel)
+            if [[ -n "${2}" ]]; then
+                auto_kernel="${2}"
+                shift 2
+            else
+                error_msg "Invalid -a parameter [ ${2} ]!"
+            fi
+            ;;
+        -e | --RootfsExpand)
+            if [[ -n "${2}" ]]; then
+                rootfs_expand="${2}"
+                shift 2
+            else
+                error_msg "Invalid -e parameter [ ${2} ]!"
+            fi
+            ;;
+        -s | --Size)
+            if [[ -n "${2}" ]]; then
+                img_mb="${2}"
+                shift 2
+            else
+                error_msg "Invalid -s parameter [ ${2} ]!"
+            fi
+            ;;
+        -n | --BuilderName)
+            if [[ -n "${2}" ]]; then
+                builder_name="${2// /}"
+                shift 2
+            else
+                error_msg "Invalid -n parameter [ ${2} ]!"
+            fi
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            [[ -n "${1}" ]] && error_msg "Invalid option [ ${1} ]!"
+            break
+            ;;
+        esac
+    done
+
+    # Set the image size: [ -s 512/2560 ] or [ -s 2560 ]
+    [[ -n "${img_mb}" ]] && {
+        if [[ "${img_mb}" =~ / ]]; then
+            boot_mb="${img_mb%%/*}"
+            root_mb="${img_mb##*/}"
+        else
+            root_mb="${img_mb}"
+        fi
+    }
+
+    # Validate partition sizes (Unit: MiB). Boot must be >= 256 and root >= 4096 to fit.
+    [[ "${boot_mb}" =~ ^[0-9]+$ && "${boot_mb}" -ge 256 ]] || error_msg "Invalid boot partition size: [ ${boot_mb} ]"
+    [[ "${root_mb}" =~ ^[0-9]+$ && "${root_mb}" -ge 4096 ]] || error_msg "Invalid rootfs partition size: [ ${root_mb} ]"
+}
+
+check_data() {
+    # Columns of ${model_conf}:
+    # 1.ID  2.MODEL  3.SOC  4.FDTFILE  5.UBOOT_OVERLOAD  6.MAINLINE_UBOOT  7.BOOTLOADER_IMG  8.DESCRIPTION
+    # 9.KERNEL_TAGS  10.PLATFORM  11.FAMILY  12.BOOT_CONF  13.CONTRIBUTORS  14.BOARD  15.BUILD
+    [[ -f "${model_conf}" ]] || error_msg "Missing model configuration file: [ ${model_conf} ]"
+
+    # Get a list of build devices
+    if [[ "${make_board}" == "all" ]]; then
+        board_list=":(yes)"
+        make_fnnas=($(
+            clean_model_conf |
+                grep -E "^.*:yes$" | awk -F':' '{print $14}' |
+                sort -u | xargs
+        ))
+    elif [[ "${make_board}" =~ ^(amlogic|rockchip|allwinner)([0-9]+_[0-9]+|[0-9]+)?$ ]]; then
+        # Get the platform name and range, such as [ amlogic50 ], [ rockchip50_100 ], etc.
+        # name is [ amlogic ], [ rockchip ], [ allwinner ], range is [ 50 ], [ 50_100 ], etc.
+        # amlogic50 -> platform_name=amlogic, platform_range=50, rockchip50_100 -> platform_name=rockchip, platform_range=50_100
+        platform_name="${BASH_REMATCH[1]}"
+        platform_range="${BASH_REMATCH[2]}"
+        make_fnnas=($(
+            clean_model_conf |
+                grep -E "^.*:${platform_name}:.*:yes$" | awk -F':' '{print $14}' |
+                sort -u | xargs
+        ))
+        # Slice by range if specified, such as [ amlogic50 ], [ rockchip50_100 ], etc.
+        if [[ "${platform_range}" =~ ^([0-9]+)_([0-9]+)$ ]]; then
+            make_fnnas=("${make_fnnas[@]:${BASH_REMATCH[1]}:$((BASH_REMATCH[2] - BASH_REMATCH[1]))}")
+        elif [[ -n "${platform_range}" ]]; then
+            make_fnnas=("${make_fnnas[@]:0:${platform_range}}")
+        fi
+        board_list=":($(echo ${make_fnnas[@]} | sed -e 's/ /\|/g')):(yes)"
+    elif [[ "${make_board}" =~ ^(first|last)([0-9]+)$ ]]; then
+        # first<N>: first N boards, last<N>: last N boards
+        slice_type="${BASH_REMATCH[1]}"
+        slice_num="${BASH_REMATCH[2]}"
+        make_fnnas=($(
+            clean_model_conf |
+                grep -E "^.*:yes$" | awk -F':' '{print $14}' |
+                sort -u | xargs
+        ))
+        [[ "${slice_type}" == "first" ]] && make_fnnas=("${make_fnnas[@]:0:${slice_num}}")
+        [[ "${slice_type}" == "last" ]] && make_fnnas=("${make_fnnas[@]: -${slice_num}}")
+        board_list=":($(echo ${make_fnnas[@]} | sed -e 's/ /\|/g')):(yes)"
+    elif [[ "${make_board}" =~ ^range([0-9]+)_([0-9]+)$ ]]; then
+        # range<N>_<M>: boards from index N, count M-N
+        range_start="${BASH_REMATCH[1]}"
+        range_end="${BASH_REMATCH[2]}"
+        make_fnnas=($(
+            clean_model_conf |
+                grep -E "^.*:yes$" | awk -F':' '{print $14}' |
+                sort -u | xargs
+        ))
+        make_fnnas=("${make_fnnas[@]:${range_start}:$((range_end - range_start))}")
+        board_list=":($(echo ${make_fnnas[@]} | sed -e 's/ /\|/g')):(yes)"
+    else
+        board_list=":($(echo ${make_board} | sed -e 's/_/\|/g')):(yes|no)"
+        # Deduplicate while preserving order so [ -b s905x_s905x ] doesn't build twice.
+        make_fnnas=($(echo ${make_board} | tr '_' '\n' | awk 'NF && !seen[$0]++'))
+    fi
+    [[ "${#make_fnnas[@]}" -eq 0 ]] && error_msg "The [ BOARD ] is missing, stop making."
+
+    # Get the kernel array from the model configuration file
+    kernel_from=($(
+        clean_model_conf |
+            grep -E "^.*${board_list}$" | awk -F':' '{print $9}' |
+            sort -u | xargs
+    ))
+    [[ "${#kernel_from[@]}" -eq 0 ]] && error_msg "Missing [ KERNEL_TAGS ] settings, stop building."
+
+    # Convert the kernel_from to the kernel array
+    for item in "${kernel_from[@]}"; do
+        # Split the key and value
+        IFS='/' read -r key value <<<"${item}"
+
+        # Check if the value is "all".
+        if [[ "${value}" == "all" ]]; then
+            # If the value is "all", assign the value of ${key}_kernel. such as [ amlogic_kernel, rockchip_kernel, etc. ]
+            eval "value=\"\${${key}_kernel[@]}\""
+        elif [[ "${value}" =~ ^[1-9]+ ]]; then
+            IFS='_' read -ra value <<<"${value}"
+            value="${value[@]}"
+        fi
+
+        # If auto_kernel is false, use the value from -k parameter
+        if [[ ! "${auto_kernel}" =~ ^(true|yes)$ ]]; then
+            if [[ "${#specific_kernel[@]}" -eq 0 ]]; then
+                error_msg "Plase use the -k parameter to specify the kernel version."
+            else
+                value="${specific_kernel[@]}"
+            fi
+        fi
+
+        # Merge the same key values
+        if [[ -n "${tags_list[${key}]}" ]]; then
+            tags_list[${key}]+=" ${value}"
+        else
+            tags_list[${key}]="${value}"
+        fi
+    done
+
+    # Convert the tags_list array to the kernel array (remove duplicates)
+    for key in "${!tags_list[@]}"; do
+        # Convert the space-separated string to an array and remove duplicates
+        read -ra unique_values <<<"$(echo "${tags_list[${key}]}" | tr ' ' '\n' | sort -u | tr '\n' ' ')"
+        # Assign the unique values back to the tags_list
+        tags_list[${key}]="${unique_values[@]}"
+    done
+
+    # Check the kernel tags list
+    [[ "${#tags_list[@]}" -eq 0 ]] && error_msg "The [ tags_list ] is missing, stop building."
+    echo -e "${INFO} The kernel tags list: [ ${!tags_list[@]} ]"
+
+    # Convert kernel repository address to api format
+    [[ "${kernel_repo}" =~ ^https: ]] && kernel_repo="$(echo ${kernel_repo} | awk -F'/' '{print $4"/"$5}')"
+    kernel_api="https://github.com/${kernel_repo}"
+}
+
+find_fnnas() {
+    cd "${current_path}"
+    echo -e "${STEPS} Searching for FnNAS image file..."
+
+    # Check if the FnNAS image file exists
+    fnnas_default_file="$(ls ${fnnas_path}/${fnnas_renas_file} 2>/dev/null | head -n 1 | awk -F "/" '{print $NF}')"
+    if [[ -n "${fnnas_default_file}" ]]; then
+        echo -e "${INFO} FnNAS image file: [ ${fnnas_default_file} ]"
+    else
+        error_msg "No [ ${fnnas_renas_file} ] file found in the [ ${fnnas_path} ] directory."
+    fi
+}
+
+git_pull_dir() {
+    cd "${current_path}"
+
+    # Validate git_pull_dir parameters
+    git_repo="${1}"
+    git_branch="${2}"
+    git_path="${3}"
+    [[ -n "${git_repo}" && -n "${git_branch}" && -n "${git_path}" ]] || {
+        error_msg "Missing git_pull_dir parameters: [ ${git_repo}, ${git_branch}, ${git_path} ]"
+    }
+
+    # Clone the repository to a temporary directory. Retry up to 10 times with 60s intervals on failure.
+    local clone_ok=0
+    for i in {1..10}; do
+        if git clone --quiet --single-branch --depth=1 --branch="${git_branch}" "${git_repo}" "${git_path}"; then
+            clone_ok=1
+            break
+        fi
+        sleep 60
+    done
+    [[ "${clone_ok}" -eq 1 ]] || error_msg "Failed to clone the [ ${git_repo} ] repository."
+}
+
+download_depends() {
+    cd "${current_path}"
+    echo -e "${STEPS} Downloading dependency files..."
+
+    # Download u-boot files
+    uboot_num="$(find "${uboot_path}/rockchip" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+    if [[ -n "${uboot_num}" && "${uboot_num}" -le "5" ]]; then
+        git_tmp_path="$(mktemp -d)"
+        git_pull_dir "${uboot_repo}" main "${git_tmp_path}"
+        # Move the u-boot files to the storage directory
+        mkdir -p "${uboot_path}"
+        cp -af --update=none --no-preserve=ownership "${git_tmp_path}/u-boot/." "${uboot_path}" ||
+            error_msg "fnnas: u-boot download failed."
+        echo -e "${INFO} fnnas: u-boot download completed."
+        # Delete temporary files
+        rm -rf "${git_tmp_path}"
+    else
+        echo -e "${INFO} fnnas: u-boot directory is not empty, skip download."
+    fi
+
+    # Download firmware files
+    firmware_num="$(find "${firmware_path}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+    if [[ -n "${firmware_num}" && "${firmware_num}" -le "5" ]]; then
+        git_tmp_path="$(mktemp -d)"
+        git_pull_dir "${firmware_repo}" main "${git_tmp_path}"
+        # Move the firmware files to the storage directory
+        mkdir -p "${firmware_path}"
+        cp -af --update=none --no-preserve=ownership "${git_tmp_path}/firmware/." "${firmware_path}" ||
+            error_msg "fnnas: firmware download failed."
+        echo -e "${INFO} fnnas: firmware download completed."
+        # Delete temporary files
+        rm -rf "${git_tmp_path}"
+    else
+        echo -e "${INFO} fnnas: firmware directory is not empty, skip download."
+    fi
+
+    # Download Armbian repository files
+    git_tmp_path="$(mktemp -d)"
+    git_pull_dir "${depends_repo}" main "${git_tmp_path}"
+    # Remove the special files in the [ sbin ] directory of the Armbian system
+    find "${git_tmp_path}" -type d -path "*/platform-files/*/rootfs/usr/sbin" -prune -exec rm -rf {} +
+    # Move the platform files to the storage directory
+    cp -af --update=none --no-preserve=ownership "${git_tmp_path}/build-armbian/armbian-files/platform-files/." "${platform_files}" ||
+        error_msg "fnnas: platform-files download failed."
+    echo -e "${INFO} fnnas: platform-files download completed."
+    # Move the different files to the storage directory
+    cp -af --update=none --no-preserve=ownership "${git_tmp_path}/build-armbian/armbian-files/different-files/." "${different_files}" ||
+        error_msg "fnnas: different-files download failed."
+    echo -e "${INFO} fnnas: different-files download completed."
+    # Delete temporary files
+    rm -rf "${git_tmp_path}"
+}
+
+query_kernel() {
+    echo -e "${STEPS} Querying latest kernel version..."
+
+    # Check the version on the kernel repository
+    x="1"
+    for key in "${!tags_list[@]}"; do
+        {
+            # Query the name of the latest kernel version
+            tmp_arr_kernels=()
+            down_kernel_list=(${tags_list[${key}]})
+            i=1
+            for kernel_var in "${down_kernel_list[@]}"; do
+                echo -e "${INFO} (${x}.${i}) Querying latest kernel version for [ ${key} - ${kernel_var} ]"
+
+                # Identify the kernel <VERSION> and <PATCHLEVEL>, such as [ 6.1 ]
+                kernel_verpatch="$(echo ${kernel_var} | awk -F '.' '{print $1"."$2}')"
+
+                # Query the latest kernel version
+                latest_version="$(
+                    curl -fsSL \
+                        ${kernel_api}/releases/expanded_assets/kernel_fnnas |
+                        grep -oP "${kernel_verpatch}\.[0-9]+(?=-${key}\.tar\.gz)" |
+                        sort -urV | head -n 1
+                )"
+
+                if [[ -n "${latest_version}" ]]; then
+                    tmp_arr_kernels[${i}]="${latest_version}"
+                else
+                    tmp_arr_kernels[${i}]="${kernel_var}"
+                fi
+
+                echo -e "${INFO} (${x}.${i}) [ ${key} - ${tmp_arr_kernels[$i]} ] is latest kernel. \n"
+
+                ((i++))
+            done
+
+            # Assign the latest kernel version to the array
+            tags_list[${key}]="${tmp_arr_kernels[@]}"
+
+            ((x++))
+        }
+    done
+}
+
+check_kernel() {
+    [[ -n "${1}" ]] && check_path="${1}" || error_msg "Invalid kernel path to check."
+    check_files=($(awk '{print $2}' "${check_path}/sha256sums"))
+    for cf in "${check_files[@]}"; do
+        {
+            # Check if file exists
+            [[ -s "${check_path}/${cf}" ]] || error_msg "The [ ${cf} ] file is missing."
+            # Check if the file sha256sum is correct (exact filename match, no substring confusion)
+            tmp_sha256sum="$(sha256sum "${check_path}/${cf}" | awk '{print $1}')"
+            tmp_checkcode="$(awk -v f="${cf}" '$2==f {print $1}' "${check_path}/sha256sums")"
+            [[ "${tmp_sha256sum}" == "${tmp_checkcode}" ]] || error_msg "[ ${cf} ]: sha256sum verification failed."
+        }
+    done
+    echo -e "${INFO} All [ ${#check_files[@]} ] kernel files passed sha256sum verification.\n"
+}
+
+download_kernel() {
+    cd "${current_path}"
+    echo -e "${STEPS} Downloading kernel files..."
+
+    x="1"
+    for key in "${!tags_list[@]}"; do
+        {
+            down_kernel_list=(${tags_list[${key}]})
+            # Download the kernel to the storage directory
+            i="1"
+            for kernel_var in "${down_kernel_list[@]}"; do
+                if [[ ! -d "${kernel_path}/${kernel_var}/${kernel_var}-${key}" ]]; then
+                    kernel_down_from="https://github.com/${kernel_repo}/releases/download/kernel_fnnas/${kernel_var}-${key}.tar.gz"
+                    echo -e "${INFO} (${x}.${i}) [ ${key} - ${kernel_var} ] Downloading kernel from [ ${kernel_down_from} ]"
+
+                    # Download the kernel files. Retry up to 10 times with 60s intervals on failure.
+                    [[ -d "${kernel_path}/${key}" ]] || mkdir -p "${kernel_path}/${key}"
+                    [[ -d "${kernel_path}/${kernel_var}" ]] || mkdir -p "${kernel_path}/${kernel_var}"
+                    local _curl_ok=0
+                    for t in {1..10}; do
+                        if curl -fsSL "${kernel_down_from}" -o "${kernel_path}/${key}/${kernel_var}-${key}.tar.gz"; then
+                            _curl_ok=1
+                            break
+                        fi
+                        sleep 60
+                    done
+                    [[ "${_curl_ok}" -eq 1 ]] || error_msg "Failed to download kernel files from the server."
+
+                    # Decompress the kernel files
+                    tar -mxzf "${kernel_path}/${key}/${kernel_var}-${key}.tar.gz" -C "${kernel_path}/${kernel_var}" ||
+                        error_msg "[ ${kernel_var} ] kernel decompression failed."
+                else
+                    echo -e "${INFO} (${x}.${i}) [ ${key} - ${kernel_var} ] Kernel is in the local directory."
+                fi
+
+                # If the kernel contains the sha256sums file, check the files integrity
+                [[ -f "${kernel_path}/${kernel_var}/${kernel_var}-${key}/sha256sums" ]] && {
+                    check_kernel "${kernel_path}/${kernel_var}/${kernel_var}-${key}"
+                }
+
+                ((i++))
+            done
+
+            # Remove downloaded kernel temporary files
+            rm -rf "${kernel_path}/${key}"
+            sync
+
+            ((x++))
+        }
+    done
+}
+
+confirm_version() {
+    cd "${current_path}"
+
+    # Columns of ${model_conf}:
+    # 1.ID  2.MODEL  3.SOC  4.FDTFILE  5.UBOOT_OVERLOAD  6.MAINLINE_UBOOT  7.BOOTLOADER_IMG  8.DESCRIPTION
+    # 9.KERNEL_TAGS  10.PLATFORM  11.FAMILY  12.BOOT_CONF  13.CONTRIBUTORS  14.BOARD  15.BUILD
+    # Column 5, called <UBOOT_OVERLOAD> in Amlogic, <TRUST_IMG> in Rockchip, Not used in Allwinner.
+
+    # Find [ the first ] configuration information with [ the same BOARD name ] and [ BUILD as yes ] in the ${model_conf} file.
+    board_conf="$(
+        clean_model_conf |
+            grep -E "^.*:${board}:(yes|no)$" |
+            head -n 1
+    )"
+    [[ -n "${board_conf}" ]] || error_msg "[ ${board} ] config is missing!"
+
+    # Get device settings options
+    MODEL_ID="$(echo ${board_conf} | awk -F':' '{print $1}')"
+    MODEL_NAME="$(echo ${board_conf} | awk -F':' '{print $2}')"
+    SOC="$(echo ${board_conf} | awk -F':' '{print $3}')"
+    FDTFILE="$(echo ${board_conf} | awk -F':' '{print $4}')"
+    UBOOT_OVERLOAD="$(echo ${board_conf} | awk -F':' '{print $5}')"
+    TRUST_IMG="${UBOOT_OVERLOAD}"
+    MAINLINE_UBOOT="$(echo ${board_conf} | awk -F':' '{print $6}')"
+    BOOTLOADER_IMG="$(echo ${board_conf} | awk -F':' '{print $7}')"
+    KERNEL_TAGS="$(echo ${board_conf} | awk -F':' '{print $9}')"
+    PLATFORM="$(echo ${board_conf} | awk -F':' '{print $10}')"
+    FAMILY="$(echo ${board_conf} | awk -F':' '{print $11}')"
+    BOOT_CONF="$(echo ${board_conf} | awk -F':' '{print $12}')"
+    CONTRIBUTORS="$(echo ${board_conf} | awk -F':' '{print $13}')"
+
+    # Check whether the key parameters are correct
+    [[ -n "${PLATFORM}" ]] || error_msg "Invalid PLATFORM parameter: [ ${PLATFORM} ]"
+    # Set supported platform name
+    support_platform=("amlogic" "rockchip" "allwinner")
+    [[ -n "$(echo "${support_platform[@]}" | grep -w "${PLATFORM}")" ]] || error_msg "[ ${PLATFORM} ] not supported."
+
+    # Add u-boot files record information
+    [[ -n "${MAINLINE_UBOOT}" ]] && RECORD_MAINLINE_UBOOT="/usr/lib/u-boot/${MAINLINE_UBOOT}" || RECORD_MAINLINE_UBOOT=""
+    [[ -n "${BOOTLOADER_IMG}" ]] && RECORD_BOOTLOADER_IMG="/usr/lib/u-boot/${BOOTLOADER_IMG}" || RECORD_BOOTLOADER_IMG=""
+    [[ -n "${TRUST_IMG}" ]] && RECORD_TRUST_IMG="/usr/lib/u-boot/${TRUST_IMG}" || RECORD_TRUST_IMG=""
+    # Set the Amlogic u-boot series
+    family_rename="${FAMILY//-/_}"
+    eval "amlogic_uboot=(\${uboot_${family_rename}[@]})"
+
+    # Get the kernel tags and version
+    conf_kernel_tags="${KERNEL_TAGS%%/*}"
+    conf_kernel_list="${KERNEL_TAGS##*/}"
+    # Check the kernel tags and version
+    [[ -z "${conf_kernel_tags}" ]] && error_msg "The [ ${KERNEL_TAGS} ] is missing tags part."
+    [[ -z "${conf_kernel_list}" ]] && error_msg "The [ ${KERNEL_TAGS} ] is missing list part."
+
+    # Find the kernel list defined in the model database
+    model_kernel=()
+    if [[ "${conf_kernel_list}" == "all" ]]; then
+        eval "model_kernel=(\"\${${conf_kernel_tags}_kernel[@]}\")"
+        model_kernel=($(echo "${model_kernel[@]}" | xargs -n1 | sed -E 's/^([0-9]+\.[0-9]+)(\.[a-z0-9]+)?$/\1.[0-9]+/'))
+    else
+        # Convert the string into an array, using "_" as the delimiter
+        IFS='_' read -ra conf_kernel_list <<<"${conf_kernel_list}"
+        model_kernel=($(echo "${conf_kernel_list[@]}" | xargs -n1 | sed -E 's/^([0-9]+\.[0-9]+)(\.[a-z0-9]+)?$/\1.[0-9]+/'))
+    fi
+    # Check the kernel list
+    [[ "${#model_kernel[@]}" -eq 0 ]] && error_msg "The kernel list is empty for [ ${board} ]"
+
+    # Find the kernel version that matches the custom version
+    build_kernel=()
+    latest_kernel=(${tags_list[${conf_kernel_tags}]})
+    for ck in "${model_kernel[@]}"; do
+        for lk in "${latest_kernel[@]}"; do
+            [[ "${lk}" =~ ^${ck}$ ]] && build_kernel+=("${lk}")
+        done
+    done
+    # Check the kernel version
+    [[ "${#build_kernel[@]}" -eq 0 ]] && error_msg "The kernel list is invalid for [ ${board} ]"
+}
+
+extract_fnnas() {
+    process_msg "(1/7) Extracting FnNAS files."
+    cd "${current_path}"
+
+    rm -rf "${tmp_path}"
+    mkdir -p "${tmp_outpath}" "${tmp_fnnas}" "${tmp_build}" "${tmp_aml_image}"
+
+    fnnas_image_file="${tmp_aml_image}/fnnas_${board}_${kernel}.img"
+    rm -f "${fnnas_image_file}"
+    cp -f "${fnnas_path}/${fnnas_default_file}" "${fnnas_image_file}"
+
+    loop_old="$(losetup -P -f --show "${fnnas_image_file}")"
+    [[ -n "${loop_old}" ]] || error_msg "losetup ${fnnas_image_file} failed."
+
+    # Mount rootfs partition
+    [[ -b "${loop_old}p2" ]] && mount_dev="${loop_old}p2" || mount_dev="${loop_old}p1"
+    mount_try btrfs "${mount_dev}" "${tmp_fnnas}"
+
+    cd "${tmp_fnnas}"
+
+    # Remove /boot files (will be replaced later)
+    rm -rf boot/*
+    # Remove kernel modules (will be replaced later)
+    rm -rf usr/lib/modules/*
+    # Remove apt cache files
+    rm -rf var/cache/apt/archives/* var/cache/man/*
+    # Remove symbolic links (will be recreated later)
+    rm -rf bin lib sbin var/lock var/run
+    # Remove unused and duplicate scripts
+    rm -f root/install* root/fstab.template
+    rm -f usr/sbin/ddbr usr/bin/ddbr
+}
+
+make_image() {
+    process_msg "(2/7) Creating FnNAS image."
+    cd "${current_path}"
+
+    # Set image file parameters by platform
+    [[ "${PLATFORM}" == "amlogic" ]] && {
+        skip_mb="4"
+        partition_table_type="msdos"
+        bootfs_type="fat32"
+    }
+    [[ "${PLATFORM}" == "rockchip" ]] && {
+        skip_mb="16"
+        partition_table_type="gpt"
+        bootfs_type="ext4"
+    }
+    [[ "${PLATFORM}" == "allwinner" ]] && {
+        skip_mb="16"
+        partition_table_type="msdos"
+        bootfs_type="fat32"
+    }
+
+    # Board-specific procedures
+    # Reset default parameters
+    write_board_file="no"
+    adjust_kernel_files="no"
+    # Load personalized settings for this board
+    board_release="${different_files}/${board}/rootfs/${board_release_file}"
+    [[ -f "${board_release}" ]] && source "${board_release}"
+
+    # echo -e "${INFO} The [ ${board} ] fnnas image partition status: [ skip:${skip_mb} / boot:${boot_mb} / rootfs:${root_mb} ] MiB."
+
+    # Ensure output directory exists
+    [[ -d "${out_path}" ]] || mkdir -p "${out_path}"
+    # Set FnNAS image filename
+    fnnas_filename="fnnas_${PLATFORM}_${board}_k${kernel}_$(date +"%Y.%m.%d").img"
+    build_image_file="${out_path}/${fnnas_filename}"
+    rm -f "${build_image_file}"
+
+    IMG_SIZE="$((skip_mb + boot_mb + root_mb))"
+    truncate -s ${IMG_SIZE}M "${build_image_file}" >/dev/null 2>&1
+
+    parted -s "${build_image_file}" mklabel ${partition_table_type} 2>/dev/null
+    parted -s "${build_image_file}" mkpart primary ${bootfs_type} $((skip_mb))MiB $((skip_mb + boot_mb - 1))MiB 2>/dev/null
+    parted -s "${build_image_file}" mkpart primary btrfs $((skip_mb + boot_mb))MiB 100% 2>/dev/null
+
+    # Mount the FnNAS image file
+    loop_new="$(losetup -P -f --show "${build_image_file}")"
+    [[ -n "${loop_new}" ]] || error_msg "losetup ${build_image_file} failed."
+
+    # Confirm BOOT_UUID
+    BOOT_UUID="$(cat /proc/sys/kernel/random/uuid)"
+    [[ -z "${BOOT_UUID}" ]] && BOOT_UUID="$(uuidgen)"
+    [[ -z "${BOOT_UUID}" ]] && error_msg "The uuidgen is invalid, cannot continue."
+    FAT_ID_RAW=$(echo "${BOOT_UUID}" | tr -d '-' | cut -c1-8)
+    FAT_ID_FSTAB=$(echo "${FAT_ID_RAW}" | awk '{print toupper(substr($0,1,4) "-" substr($0,5,4))}')
+    # Confirm ROOTFS_UUID
+    ROOTFS_UUID="$(cat /proc/sys/kernel/random/uuid)"
+    [[ -z "${ROOTFS_UUID}" ]] && ROOTFS_UUID="$(uuidgen)"
+    [[ -z "${ROOTFS_UUID}" ]] && error_msg "The uuidgen is invalid, cannot continue."
+
+    # Format BOOTFS partition
+    if [[ "${bootfs_type}" == "fat32" ]]; then
+        mkfs.vfat -F 32 -i "${FAT_ID_RAW}" -n "BOOT" ${loop_new}p1 >/dev/null 2>&1
+    else
+        mkfs.ext4 -F -q -U ${BOOT_UUID} -L "BOOT" -b 4k -m 0 ${loop_new}p1 >/dev/null 2>&1
+    fi
+
+    # Format ROOTFS partition
+    mkfs.btrfs -f -U ${ROOTFS_UUID} -L "ROOTFS" -m single ${loop_new}p2 >/dev/null 2>&1
+
+    # Write bootloader for Amlogic platform
+    [[ "${PLATFORM}" == "amlogic" ]] && {
+        bootloader_path="${uboot_path}/${PLATFORM}/bootloader"
+        if [[ -n "${MAINLINE_UBOOT}" && -f "${bootloader_path}/${MAINLINE_UBOOT}" ]]; then
+            dd if="${bootloader_path}/${MAINLINE_UBOOT}" of="${loop_new}" conv=fsync bs=1 count=444 2>/dev/null
+            dd if="${bootloader_path}/${MAINLINE_UBOOT}" of="${loop_new}" conv=fsync bs=512 skip=1 seek=1 2>/dev/null
+            #echo -e "${INFO} 01. For [ ${board} ] write bootloader: ${MAINLINE_UBOOT}"
+        elif [[ -n "${BOOTLOADER_IMG}" && -f "${bootloader_path}/${BOOTLOADER_IMG}" ]]; then
+            dd if="${bootloader_path}/${BOOTLOADER_IMG}" of="${loop_new}" conv=fsync bs=1 count=444 2>/dev/null
+            dd if="${bootloader_path}/${BOOTLOADER_IMG}" of="${loop_new}" conv=fsync bs=512 skip=1 seek=1 2>/dev/null
+            #echo -e "${INFO} 02. For [ ${board} ] write bootloader: ${BOOTLOADER_IMG}"
+        fi
+    }
+
+    # Write bootloader for Rockchip platform
+    [[ "${PLATFORM}" == "rockchip" ]] && {
+        bootloader_path="${uboot_path}/${PLATFORM}/${board}"
+        if [[ -n "${BOOTLOADER_IMG}" && -f "${bootloader_path}/${BOOTLOADER_IMG}" ]] &&
+            [[ -n "${MAINLINE_UBOOT}" && -f "${bootloader_path}/${MAINLINE_UBOOT}" ]] &&
+            [[ -n "${TRUST_IMG}" && -f "${bootloader_path}/${TRUST_IMG}" ]]; then
+            dd if="${bootloader_path}/${BOOTLOADER_IMG}" of="${loop_new}" conv=fsync,notrunc bs=512 seek=64 2>/dev/null
+            dd if="${bootloader_path}/${MAINLINE_UBOOT}" of="${loop_new}" conv=fsync,notrunc bs=512 seek=16384 2>/dev/null
+            dd if="${bootloader_path}/${TRUST_IMG}" of="${loop_new}" conv=fsync,notrunc bs=512 seek=24576 2>/dev/null
+            #echo -e "${INFO} 01. For [ ${board} ] write bootloader: ${TRUST_IMG}"
+        elif [[ -n "${BOOTLOADER_IMG}" && -f "${bootloader_path}/${BOOTLOADER_IMG}" ]] &&
+            [[ -n "${MAINLINE_UBOOT}" && -f "${bootloader_path}/${MAINLINE_UBOOT}" ]]; then
+            dd if="${bootloader_path}/${BOOTLOADER_IMG}" of="${loop_new}" conv=fsync,notrunc bs=512 seek=64 2>/dev/null
+            dd if="${bootloader_path}/${MAINLINE_UBOOT}" of="${loop_new}" conv=fsync,notrunc bs=512 seek=16384 2>/dev/null
+            #echo -e "${INFO} 02. For [ ${board} ] write bootloader: ${MAINLINE_UBOOT}"
+        elif [[ "${BOOTLOADER_IMG}" == "u-boot-rockchip.bin" && -f "${bootloader_path}/${BOOTLOADER_IMG}" ]]; then
+            dd if="${bootloader_path}/${BOOTLOADER_IMG}" of="${loop_new}" conv=fsync,notrunc bs=512 seek=64 2>/dev/null
+            #echo -e "${INFO} 03. For [ ${board} ] write bootloader: ${BOOTLOADER_IMG}"
+        elif [[ -n "${BOOTLOADER_IMG}" && -f "${bootloader_path}/${BOOTLOADER_IMG}" ]]; then
+            dd if="${bootloader_path}/${BOOTLOADER_IMG}" of="${loop_new}" conv=fsync,notrunc bs=512 skip=64 seek=64 2>/dev/null
+            #echo -e "${INFO} 04. For [ ${board} ] write bootloader: ${BOOTLOADER_IMG}"
+        fi
+    }
+
+    # Write bootloader for Allwinner platform
+    [[ "${PLATFORM}" == "allwinner" ]] && {
+        bootloader_path="${uboot_path}/${PLATFORM}/${board}"
+        if [[ -n "${BOOTLOADER_IMG}" && -f "${bootloader_path}/${BOOTLOADER_IMG}" ]] &&
+            [[ -n "${MAINLINE_UBOOT}" && -f "${bootloader_path}/${MAINLINE_UBOOT}" ]]; then
+            dd if="${bootloader_path}/${BOOTLOADER_IMG}" of="${loop_new}" conv=fsync,notrunc bs=8k seek=1 2>/dev/null
+            dd if="${bootloader_path}/${MAINLINE_UBOOT}" of="${loop_new}" conv=fsync,notrunc bs=8k seek=5 2>/dev/null
+            #echo -e "${INFO} 01. For [ ${board} ] write bootloader: ${MAINLINE_UBOOT}"
+        elif [[ -n "${BOOTLOADER_IMG}" && -f "${bootloader_path}/${BOOTLOADER_IMG}" ]]; then
+            dd if="${bootloader_path}/${BOOTLOADER_IMG}" of="${loop_new}" conv=fsync,notrunc bs=8k seek=1 2>/dev/null
+            #echo -e "${INFO} 02. For [ ${board} ] write bootloader: ${BOOTLOADER_IMG}"
+        fi
+    }
+
+    # Set partition labels
+    if [[ "${partition_table_type}" == "msdos" ]]; then
+        echo "label-id: 0x${FAT_ID_RAW}" | sfdisk "${loop_new}" >/dev/null 2>&1
+    elif [[ "${partition_table_type}" == "gpt" ]]; then
+        parted -s "${build_image_file}" name 1 BOOT 2>/dev/null
+        parted -s "${build_image_file}" name 2 ROOTFS 2>/dev/null
+    fi
+
+    # Board-specific bootloader procedures
+    [[ "${write_board_file}" == "yes" ]] && write_board_bootloader
+}
+
+copy_files() {
+    process_msg "(3/7) Copying FnNAS files."
+    cd "${current_path}"
+
+    # Create a dual-partition general directory
+    tag_bootfs="${tmp_build}/bootfs"
+    tag_rootfs="${tmp_build}/rootfs"
+    mkdir -p "${tag_bootfs}" "${tag_rootfs}"
+    chown root:root "${tag_bootfs}" "${tag_rootfs}"
+
+    # Mount bootfs
+    if [[ "${bootfs_type}" == "fat32" ]]; then
+        mount_try vfat "${loop_new}p1" "${tag_bootfs}"
+    else
+        mount_try ext4 "${loop_new}p1" "${tag_bootfs}"
+    fi
+
+    # Mount rootfs
+    mount_try btrfs "${loop_new}p2" "${tag_rootfs}"
+
+    # Copy the full FnNAS image
+    cp -af "${tmp_fnnas}/." "${tag_rootfs}"
+
+    # Copy the common files
+    [[ -d "${common_files}" ]] && cp -af --no-preserve=ownership "${common_files}/." "${tag_rootfs}"
+
+    # Copy the platform files
+    platform_bootfs="${platform_files}/${PLATFORM}/bootfs"
+    platform_rootfs="${platform_files}/${PLATFORM}/rootfs"
+    [[ -d "${platform_bootfs}" ]] && cp -rf "${platform_bootfs}/." "${tag_bootfs}"
+    [[ -d "${platform_rootfs}" ]] && cp -af --no-preserve=ownership "${platform_rootfs}/." "${tag_rootfs}"
+
+    # Copy the different files
+    different_bootfs="${different_files}/${board}/bootfs"
+    different_rootfs="${different_files}/${board}/rootfs"
+    [[ -d "${different_bootfs}" ]] && cp -rf "${different_bootfs}/." "${tag_bootfs}"
+    [[ -d "${different_rootfs}" ]] && cp -af --no-preserve=ownership "${different_rootfs}/." "${tag_rootfs}"
+
+    # Copy the bootloader files
+    [[ -d "${tag_rootfs}/usr/lib/u-boot" ]] || mkdir -p "${tag_rootfs}/usr/lib/u-boot"
+    [[ -n "${tag_rootfs}" && -d "${tag_rootfs}/usr/lib/u-boot" ]] && rm -rf "${tag_rootfs}/usr/lib/u-boot"/*
+    [[ -d "${bootloader_path}" ]] && cp -af --no-preserve=ownership "${bootloader_path}/." "${tag_rootfs}/usr/lib/u-boot"
+
+    # Copy the Amlogic overload files
+    [[ "${PLATFORM}" == "amlogic" ]] && {
+        for au in "${amlogic_uboot[@]}"; do
+            if [[ -f "${uboot_path}/${PLATFORM}/overload/u-boot-${au}" ]]; then
+                cp -f "${uboot_path}/${PLATFORM}/overload/u-boot-${au}" "${tag_bootfs}"
+            else
+                error_msg "The [ u-boot-${au} ] file is missing in the [ ${uboot_path}/${PLATFORM}/overload ] directory."
+            fi
+        done
+    }
+
+    # Remove .git directories
+    rm -rf $(find "${tmp_build}" -type d -name '.git')
+}
+
+replace_kernel() {
+    process_msg "(4/7) Replacing kernel."
+    cd "${current_path}"
+
+    # Determine custom kernel filename
+    kernel_boot="$(ls ${kernel_path}/${kernel}/${kernel}-${PLATFORM}/boot-${PLATFORM}-${kernel}*.tar.gz 2>/dev/null | head -n 1)"
+    [[ -n "${kernel_boot}" ]] || error_msg "Missing kernel boot file for [ ${kernel} ]"
+    kernel_name="${kernel_boot##*/}"
+    kernel_name="${kernel_name#boot-${PLATFORM}-}"
+    kernel_name="${kernel_name%.tar.gz}"
+    [[ -n "${kernel_name}" ]] || error_msg "Missing kernel files for [ ${kernel} ]"
+    kernel_dtb="${kernel_path}/${kernel}/${kernel}-${PLATFORM}/dtb-${PLATFORM}-${kernel_name}.tar.gz"
+    kernel_modules="${kernel_path}/${kernel}/${kernel}-${PLATFORM}/modules-${PLATFORM}-${kernel_name}.tar.gz"
+    kernel_header="${kernel_path}/${kernel}/${kernel}-${PLATFORM}/header-${PLATFORM}-${kernel_name}.tar.gz"
+    [[ -s "${kernel_boot}" && -s "${kernel_dtb}" && -s "${kernel_modules}" && -s "${kernel_header}" ]] || error_msg "The 4 kernel missing."
+
+    # 01. For /boot five files
+    tar -mxzf "${kernel_boot}" -C "${tag_bootfs}"
+    [[ "${PLATFORM}" == "allwinner" ]] && (cd "${tag_bootfs}" && cp -f "uInitrd-${kernel_name}" uInitrd && cp -f "vmlinuz-${kernel_name}" Image)
+    [[ "${PLATFORM}" == "amlogic" ]] && (cd "${tag_bootfs}" && cp -f "uInitrd-${kernel_name}" uInitrd && cp -f "vmlinuz-${kernel_name}" zImage)
+    [[ "${PLATFORM}" == "rockchip" ]] && (cd "${tag_bootfs}" && ln -sf "uInitrd-${kernel_name}" uInitrd && ln -sf "vmlinuz-${kernel_name}" Image)
+    [[ "$(ls ${tag_bootfs}/*${kernel_name} -l 2>/dev/null | grep "^-" | wc -l)" -ge "2" ]] || error_msg "The /boot files is missing."
+    [[ "${PLATFORM}" == "amlogic" ]] && get_textoffset "${tag_bootfs}/zImage"
+
+    # 02. For /boot/dtb/${PLATFORM}/*
+    [[ -d "${tag_bootfs}/dtb/${PLATFORM}" ]] || mkdir -p "${tag_bootfs}/dtb/${PLATFORM}"
+    tar -mxzf "${kernel_dtb}" -C "${tag_bootfs}/dtb/${PLATFORM}"
+    [[ "${PLATFORM}" == "rockchip" ]] && ln -sf dtb "${tag_bootfs}/dtb-${kernel_name}"
+    [[ "$(ls ${tag_bootfs}/dtb/${PLATFORM} -l 2>/dev/null | grep "^-" | wc -l)" -ge "2" ]] || error_msg "/boot/dtb/${PLATFORM} files is missing."
+
+    # 03. For /usr/src/linux-headers-${kernel_name}
+    header_path="linux-headers-${kernel_name}"
+    [[ -n "${tag_rootfs}" && -d "${tag_rootfs}/usr/src" ]] && rm -rf "${tag_rootfs}/usr/src"/linux-headers-* 2>/dev/null
+    mkdir -p "${tag_rootfs}/usr/src/${header_path}"
+    tar -mxzf "${kernel_header}" -C "${tag_rootfs}/usr/src/${header_path}"
+    [[ -d "${tag_rootfs}/usr/src/${header_path}/include" ]] || error_msg "/usr/src/${header_path}/include folder is missing."
+
+    # 04. For /usr/lib/modules/${kernel_name}
+    tar -mxzf "${kernel_modules}" -C "${tag_rootfs}/usr/lib/modules"
+    (cd "${tag_rootfs}/usr/lib/modules/${kernel_name}/" && rm -f build source 2>/dev/null && ln -sf "/usr/src/${header_path}" build)
+    [[ -d "${tag_rootfs}/usr/lib/modules/${kernel_name}" ]] || error_msg "/usr/lib/modules/${kernel_name} folder is missing."
+
+    # Board-specific kernel file adjustments
+    [[ "${adjust_kernel_files}" == "yes" ]] && adjust_kernel_files_cmd
+}
+
+refactor_bootfs() {
+    process_msg "(5/7) Refactoring BOOTFS files."
+    cd "${tag_bootfs}"
+
+    # Process Amlogic boot partition files
+    [[ "${PLATFORM}" == "amlogic" && "${need_overload}" == "yes" ]] && {
+        # Add u-boot.ext for Amlogic 5.10 kernel
+        if [[ -n "${UBOOT_OVERLOAD}" && -f "${UBOOT_OVERLOAD}" ]]; then
+            cp -f "${UBOOT_OVERLOAD}" u-boot.ext
+            chmod +x u-boot.ext
+        elif [[ -z "${UBOOT_OVERLOAD}" || ! -f "${UBOOT_OVERLOAD}" ]]; then
+            error_msg "${board} Board does not support using ${kernel} kernel, missing u-boot."
+        fi
+    }
+
+    # Set uEnv.txt & extlinux.conf root device parameters
+    uenv_rootdev="UUID=${ROOTFS_UUID} rootflags=compress=zstd:1 rw rootwait rootfstype=btrfs"
+    # Set armbianEnv.txt root device parameters
+    armbianenv_rootdev="UUID=${ROOTFS_UUID}"
+    armbianenv_rootflags="compress=zstd:1"
+
+    # Edit the uEnv.txt
+    uenv_conf_file="uEnv.txt"
+    [[ -f "${uenv_conf_file}" ]] && {
+        sed -i \
+            -e "s|LABEL=ROOTFS|${uenv_rootdev}|g" \
+            -e "s|meson.*.dtb|${FDTFILE}|g" \
+            -e "s|sun.*.dtb|${FDTFILE}|g" \
+            -e "s|rk.*.dtb|${FDTFILE}|g" \
+            "${uenv_conf_file}"
+    }
+
+    # Add an alternate file (/boot/extlinux/extlinux.conf)
+    boot_extlinux_file="extlinux/extlinux.conf.bak"
+    rename_extlinux_file="extlinux/extlinux.conf"
+    [[ -f "${boot_extlinux_file}" ]] && {
+        sed -i \
+            -e "s|LABEL=ROOTFS|${uenv_rootdev}|g" \
+            -e "s|meson.*.dtb|${FDTFILE}|g" \
+            -e "s|sun.*.dtb|${FDTFILE}|g" \
+            -e "s|rk.*.dtb|${FDTFILE}|g" \
+            "${boot_extlinux_file}"
+        # If needed, such as t95z(s905x), rename delete .bak
+        [[ "${BOOT_CONF}" == "extlinux.conf" ]] && mv -f "${boot_extlinux_file}" "${rename_extlinux_file}"
+    }
+
+    # Edit the armbianEnv.txt
+    armbianenv_conf_file="armbianEnv.txt"
+    [[ -f "${armbianenv_conf_file}" ]] && {
+        sed -i \
+            -e "s|\\(fdtfile=.*\\/\\)[^/]*$|\\1${FDTFILE}|g" \
+            -e "s|^rootdev=.*|rootdev=${armbianenv_rootdev}|g" \
+            -e "s|^rootfstype=.*|rootfstype=btrfs|g" \
+            -e "s|^rootflags=.*|rootflags=${armbianenv_rootflags}|g" \
+            -e "s|^overlay_prefix=.*|overlay_prefix=${FAMILY}|g" \
+            "${armbianenv_conf_file}"
+    }
+
+    # Edit the fnEnv.txt
+    fnenv_conf_file="fnEnv.txt"
+    [[ -f "${fnenv_conf_file}" ]] && {
+        sed -i \
+            -e "s|\\(fdtfile=.*\\/\\)[^/]*$|\\1${FDTFILE}|g" \
+            -e "s|^kernelfile=.*|kernelfile=vmlinuz-${kernel_name}|g" \
+            -e "s|^initrdfile=.*|initrdfile=uInitrd-${kernel_name}|g" \
+            "${fnenv_conf_file}"
+        [[ "${PLATFORM}" =~ ^(allwinner|amlogic)$ ]] && {
+            sed -i \
+                -e "s|^instdisk_bootuuid=.*|instdisk_bootuuid=${FAT_ID_RAW}-01|g" \
+                -e "s|^instdisk_rootuuid=.*|instdisk_rootuuid=${FAT_ID_RAW}-02|g" \
+                "${fnenv_conf_file}"
+        }
+    }
+
+    # Check boot configuration files
+    [[ -f "${uenv_conf_file}" || -f "${rename_extlinux_file}" || -f "${armbianenv_conf_file}" || -f "${fnenv_conf_file}" ]] || error_msg "Missing boot configuration file [ /boot/*Env.txt ]"
+}
+
+refactor_rootfs() {
+    process_msg "(6/7) Refactoring ROOTFS files."
+    cd "${tag_rootfs}"
+
+    # Disable update_initramfs
+    initramfs_conf="etc/initramfs-tools/update-initramfs.conf"
+    [[ -f "${initramfs_conf}" ]] && {
+        [[ -n "$(cat ${initramfs_conf} | grep -oE "^update_initramfs=")" ]] || error_msg "Missing [ update_initramfs ]"
+        sed -i "s|^update_initramfs=.*|update_initramfs=no|g" "${initramfs_conf}"
+    }
+
+    # Delete unused files
+    rm -f var/lib/dpkg/info/linux-image*
+    rm -rf usr/share/doc/linux-image-*
+    rm -f usr/trim/bin/resize-rootfs.sh
+
+    # Rebuild symbolic links (ln -sf ${target} ${symbolic_link_file})
+    ln -sf usr/bin bin
+    ln -sf usr/lib lib
+    ln -sf usr/sbin sbin
+    ln -sf /run/lock var/lock
+    ln -sf /run var/run
+    ln -sf /usr/share/zoneinfo/Asia/Shanghai etc/localtime
+    ln -sf fnnas-ddbr usr/sbin/ddbr
+    ln -sf /usr/sbin/fnnas-tf usr/trim/bin/resize-rootfs.sh
+
+    # Fix common release permissions
+    [[ -d "var/tmp" ]] && chmod 777 var/tmp
+    [[ -d "var/cache/man" ]] && chown man:root var/cache/man -R
+    [[ -d "var/cache/man" ]] && chmod g+s var/cache/man -R
+    [[ -f "etc/sudoers" ]] && chown root:root etc/sudoers
+    [[ -f "etc/sudoers" ]] && chmod 440 etc/sudoers
+    [[ -f "usr/bin/sudo" ]] && chown root:root usr/bin/sudo
+    [[ -f "usr/bin/sudo" ]] && chmod 4755 usr/bin/sudo
+    # Fix focal permissions
+    [[ -f "usr/lib/sudo/sudoers.so" ]] && chown 0 usr/lib/sudo/sudoers.so
+    [[ -f "usr/lib/sudo/sudoers.so" ]] && chmod 644 usr/lib/sudo/sudoers.so
+    [[ -f "usr/lib/policykit-1/polkit-agent-helper-1" ]] && chmod 4755 usr/lib/policykit-1/polkit-agent-helper-1
+    # Fix jammy permissions
+    [[ -f "usr/libexec/sudo/sudoers.so" ]] && chown 0 usr/libexec/sudo/sudoers.so
+    [[ -f "usr/libexec/sudo/sudoers.so" ]] && chmod 644 usr/libexec/sudo/sudoers.so
+    [[ -f "usr/libexec/polkit-agent-helper-1" ]] && chmod 4755 usr/libexec/polkit-agent-helper-1
+
+    # Edit the etc/fstab
+    echo "# <file system> <mount point>   <type>  <options>       <dump>  <pass>" >etc/fstab
+    echo "UUID=${ROOTFS_UUID}       /      btrfs  defaults,noatime,compress=zstd:1    0 1" >>etc/fstab
+    if [[ "${bootfs_type}" == "fat32" ]]; then
+        echo "UUID=${FAT_ID_FSTAB}  /boot  vfat   defaults,noatime,errors=remount-ro  0 2" >>etc/fstab
+    else
+        echo "UUID=${BOOT_UUID}     /boot  ext4   defaults,noatime,errors=remount-ro  0 2" >>etc/fstab
+    fi
+    echo "tmpfs                     /tmp   tmpfs  defaults,nosuid  0 0" >>etc/fstab
+
+    # Make the .bashrc take effect, Default shell settings file: /etc/default/useradd
+    echo '[[ "${SHELL}" == *bash && -f "${HOME}/.bashrc" ]] && . ${HOME}/.bashrc' >>etc/profile
+
+    # Set rootfs expansion limit in fnnas.conf
+    [[ -f "${fnnas_conf}" ]] || error_msg "Missing FnNAS configuration file: [ ${fnnas_conf} ]"
+    rootfs_expand="$(echo "${rootfs_expand}" | tr -cd '0-9.' | cut -d. -f1)"
+    [[ -z "${rootfs_expand}" || ! "${rootfs_expand}" =~ ^[0-9]+$ ]] && rootfs_expand="16"
+    [[ "${rootfs_expand}" -ne "16" ]] && {
+        sed -i "s|^rootfs_limit_gib=.*|rootfs_limit_gib=\"${rootfs_expand}\"|g" "${fnnas_conf}"
+    }
+
+    # Get random macaddr
+    mac_hexchars="0123456789ABCDEF"
+    mac_end=$(for i in {1..6}; do echo -n ${mac_hexchars:$((${RANDOM} % 16)):1}; done | sed -e 's/\(..\)/:\1/g')
+    random_macaddr="9E:61${mac_end}"
+
+    # Optimize wifi/bluetooth module
+    [[ -d "usr/lib/firmware/brcm" ]] && (
+        cd usr/lib/firmware/brcm/ && rm -f ../*.hcd
+
+        # gtking/gtking pro is bcm4356 wifi/bluetooth, wifi5 module AP6356S
+        sed -e "s/macaddr=.*/macaddr=${random_macaddr}:00/" "brcmfmac4356-sdio.txt" >"brcmfmac4356-sdio.azw,gtking.txt"
+        # gtking/gtking pro is bcm4356 wifi/bluetooth, wifi6 module AP6275S
+        sed -e "s/macaddr=.*/macaddr=${random_macaddr}:01/" "brcmfmac4375-sdio.txt" >"brcmfmac4375-sdio.azw,gtking.txt"
+        # MXQ Pro+ is AP6330(bcm4330) wifi/bluetooth
+        sed -e "s/macaddr=.*/macaddr=${random_macaddr}:02/" "brcmfmac4330-sdio.txt" >"brcmfmac4330-sdio.crocon,mxq-pro-plus.txt"
+        # HK1 Box & H96 Max X3 is bcm54339 wifi/bluetooth
+        sed -e "s/macaddr=.*/macaddr=${random_macaddr}:03/" "brcmfmac4339-sdio.ZP.txt" >"brcmfmac4339-sdio.amlogic,sm1.txt"
+        # new ugoos x3 is brm43456
+        sed -e "s/macaddr=.*/macaddr=${random_macaddr}:04/" "brcmfmac43456-sdio.txt" >"brcmfmac43456-sdio.amlogic,sm1.txt"
+        # x96max plus v5.1 (ip1001m phy) adopts am7256 (brcm4354)
+        sed -e "s/macaddr=.*/macaddr=${random_macaddr}:05/" "brcmfmac4354-sdio.txt" >"brcmfmac4354-sdio.amlogic,sm1.txt"
+        # panther x2 AP6212A
+        sed -e "s/macaddr=.*/macaddr=${random_macaddr}:06/" "brcmfmac43430-sdio.txt" >"brcmfmac43430-sdio.panther,x2.txt"
+        # ct2000 s922x is brm4359
+        sed -i "s/macaddr=.*/macaddr=${random_macaddr}:07/" "brcmfmac4359-sdio.ali,ct2000.txt"
+        # easepi-r2 is AP6256 (BCM43455) wifi/bluetooth
+        sed -e "s/macaddr=.*/macaddr=${random_macaddr}:08/" "brcmfmac43455-sdio.txt" >"brcmfmac43455-sdio.linkease,easepi-r2.txt"
+        ln -sf brcmfmac43455-sdio.bin brcmfmac43455-sdio.linkease,easepi-r2.bin
+        ln -sf brcmfmac43455-sdio.clm_blob brcmfmac43455-sdio.linkease,easepi-r2.clm_blob
+        # easepi-a2 is AP6255 (BCM43455) wifi/bluetooth
+        sed -e "s/macaddr=.*/macaddr=${random_macaddr}:09/" "brcmfmac43455-sdio.txt" >"brcmfmac43455-sdio.easepi,a2.txt"
+        ln -sf brcmfmac43455-sdio.bin brcmfmac43455-sdio.easepi,a2.bin
+        ln -sf brcmfmac43455-sdio.clm_blob brcmfmac43455-sdio.easepi,a2.clm_blob
+    )
+
+    # Add FnNAS system information
+    release_lines=(
+        "PLATFORM='${PLATFORM}'"
+        "VERSION_CODEID='${release_codeid}'"
+        "VERSION_CODENAME='${release_codename}'"
+        "MODEL_ID='${MODEL_ID}'"
+        "MODEL_NAME='${MODEL_NAME}'"
+        "SOC='${SOC}'"
+        "FDTFILE='${FDTFILE}'"
+        "FAMILY='${FAMILY}'"
+        "BOARD='${board}'"
+        "KERNEL_REPO='${kernel_repo}'"
+        "KERNEL_TAGS='kernel_fnnas'"
+        "KERNEL_VERSION='${kernel}'"
+        "KERNEL_BACKUP='yes'"
+        "BOOT_CONF='${BOOT_CONF}'"
+        "ROOTFS_TYPE='btrfs'"
+        "DISK_TYPE='usb'"
+        "AMPART_STATUS='no'"
+        "MLUBOOT_STATUS='no'"
+        "MAINLINE_UBOOT='${RECORD_MAINLINE_UBOOT}'"
+        "BOOTLOADER_IMG='${RECORD_BOOTLOADER_IMG}'"
+        "FNNAS_WEBSITE='fnnas.com'"
+        "REBUILD_REPOSITORY='github.com/ophub/fnnas'"
+        "CONTRIBUTORS='${CONTRIBUTORS}'"
+        "BUILDER_NAME='${builder_name}'"
+        "PACKAGED_DATE='$(date +%Y-%m-%d)'"
+    )
+    [[ "${PLATFORM}" == "rockchip" ]] && release_lines+=("TRUST_IMG='${RECORD_TRUST_IMG}'")
+    [[ "${PLATFORM}" == "amlogic" ]] && release_lines+=("UBOOT_OVERLOAD='${UBOOT_OVERLOAD}'")
+    printf '%s\n' "${release_lines[@]}" >>${ophub_release_file}
+
+    sync && sleep 3
+}
+
+clean_tmp() {
+    process_msg "(7/7) Cleaning temporary files."
+    cd "${current_path}"
+
+    umount -f "${tmp_fnnas}" 2>/dev/null
+    losetup -d "${loop_old}" 2>/dev/null
+
+    # Unmount the FnNAS image file
+    fstrim "${tag_bootfs}" 2>/dev/null
+    fstrim "${tag_rootfs}" 2>/dev/null
+    umount -f "${tag_bootfs}" 2>/dev/null
+    umount -f "${tag_rootfs}" 2>/dev/null
+    losetup -d "${loop_new}" 2>/dev/null
+
+    cd "${out_path}"
+    # Compress the FnNAS image file. Prefer pigz when available; otherwise fall back to gzip.
+    if command -v pigz >/dev/null 2>&1; then
+        pigz -qf "${fnnas_filename}"
+    else
+        gzip -qf "${fnnas_filename}"
+    fi
+
+    cd "${current_path}"
+    # Clean up temporary files directory
+    rm -rf "${tmp_path}" && sync
+}
+
+loop_make() {
+    cd "${current_path}"
+    echo -e "${STEPS} Building FnNAS system images..."
+
+    j="1"
+    for b in "${make_fnnas[@]}"; do
+        {
+            # Set configuration for building FnNAS image
+            board="${b}"
+            confirm_version
+
+            i="1"
+            for k in "${build_kernel[@]}"; do
+                {
+                    # Set the kernel version
+                    kernel="${k}"
+
+                    # Check disk space size.
+                    echo -ne "(${j}.${i}) Building FnNAS [\033[92m ${board} - ${kernel} \033[0m]. "
+                    avail_kib="$(df -Pk "${make_path}" | awk 'NR==2 {print $4}')"
+                    now_remaining_space=$((${avail_kib:-0} / 1024 / 1024))
+                    if [[ "${now_remaining_space}" -le 10 ]]; then
+                        echo -e "${WARNING} Remaining space is less than 10 GiB, skipping this build."
+                        break
+                    else
+                        echo "Remaining space: ${now_remaining_space} GiB."
+                    fi
+
+                    # Execute the following functions in sequence
+                    extract_fnnas
+                    make_image
+                    copy_files
+                    replace_kernel
+                    refactor_bootfs
+                    refactor_rootfs
+                    clean_tmp
+
+                    echo -e "(${j}.${i}) FnNAS built successfully. \n"
+                    ((i++))
+                }
+            done
+
+            ((j++))
+        }
+    done
+}
+
+# Show welcome message
+echo -e "${STEPS} Welcome to the FnNAS image builder!"
+echo -e "${INFO} Server running on Ubuntu: [ Release: ${host_release} / Host: ${arch_info} ] \n"
+# Check script permission
+[[ "$(id -u)" == 0 ]] || error_msg "Please run this script as root: [ sudo ./${0} ]"
+
+# Initialize variables and download the kernel
+init_var "${@}"
+check_data
+# Find FnNAS image file
+find_fnnas
+# Download dependency files
+download_depends
+# Query latest kernel version
+[[ "${auto_kernel}" =~ ^(true|yes)$ ]] && query_kernel
+# Download kernel files
+download_kernel
+
+# Show build settings
+echo -e "${INFO} [ ${#make_fnnas[@]} ] target boards: [ $(echo ${make_fnnas[@]} | xargs) ]"
+echo -e "${INFO} Kernel Repo: [ ${kernel_repo} ], Kernel from: [ $(echo ${kernel_from[@]} | xargs) ] \n"
+# Show server space usage before build
+echo -e "${INFO} Server space usage before building: \n$(df -hT ${make_path}) \n"
+
+# Build FnNAS images in a loop
+loop_make
+
+# Show server space usage after build
+echo -e "${STEPS} Server space usage after building: \n$(df -hT ${make_path}) \n"
+echo -e "${SUCCESS} All processes completed successfully."

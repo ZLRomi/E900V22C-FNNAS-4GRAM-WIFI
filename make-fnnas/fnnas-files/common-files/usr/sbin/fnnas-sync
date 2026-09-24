@@ -1,0 +1,140 @@
+#!/bin/bash
+#==========================================================================
+#
+# This file is licensed under the terms of the GNU General Public
+# License version 2. This program is licensed "as is" without any
+# warranty of any kind, whether express or implied.
+#
+# This file is a part of the FnNAS project
+# https://github.com/ophub/fnnas
+#
+# Description: Synchronize all service scripts
+# Copyright (C) 2022- https://github.com/unifreq/openwrt_packit
+# Copyright (C) 2022- https://github.com/ophub/fnnas
+#
+# Command: fnnas-sync
+#
+#============================= Functions list =============================
+#
+# error_msg       : Output error message
+# check_release   : Check the config file
+# check_depends   : Check dependencies
+# sync_config     : Synchronize all service scripts
+#
+#==========================================================================
+#
+# FnNAS firmware configuration file
+ophub_release_file="/etc/ophub-release"
+# Script files repository
+script_repo="https://github.com/ophub/fnnas.git"
+script_dir="make-fnnas/fnnas-files"
+# Service scripts installation path
+sbin_path="/usr/sbin"
+#
+# Set font color
+STEPS="[\033[95m STEPS \033[0m]"
+INFO="[\033[94m INFO \033[0m]"
+SUCCESS="[\033[92m SUCCESS \033[0m]"
+OPTIONS="[\033[93m OPTIONS \033[0m]"
+ERROR="[\033[91m ERROR \033[0m]"
+#
+#==========================================================================
+
+# Encountered a serious error, abort the script execution
+error_msg() {
+    echo -e "${ERROR} ${1}"
+    exit 1
+}
+
+# Check the config file
+check_release() {
+    # Check release file
+    [[ -f "${ophub_release_file}" ]] || error_msg "Missing configuration file: [ ${ophub_release_file} ]."
+
+    # Get values
+    source "${ophub_release_file}"
+    PLATFORM="${PLATFORM}"
+    FDTFILE="${FDTFILE}"
+
+    # Early devices did not add platform parameters, auto-completion
+    [[ -z "${PLATFORM}" && -n "${FDTFILE}" ]] && {
+        [[ ${FDTFILE:0:5} == "meson" ]] && PLATFORM="amlogic" || PLATFORM="rockchip"
+        echo "PLATFORM='${PLATFORM}'" >>${ophub_release_file}
+    }
+
+    echo -e "${INFO} Armbian PLATFORM: [ ${PLATFORM} ]"
+}
+
+# Check dependencies
+check_depends() {
+    # Check the necessary dependencies for apt install
+    is_dpkg="0"
+    dpkg_packages=("git" "tar" "coreutils")
+    i="1"
+    for package in ${dpkg_packages[*]}; do
+        [[ -n "$(dpkg -l | awk '{print $2}' | grep -w "^${package}$" 2>/dev/null)" ]] || is_dpkg="1"
+        ((i++))
+    done
+    # Install missing packages
+    if [[ "${is_dpkg}" -eq "1" ]]; then
+        echo -e "${STEPS} Installing required dependencies..."
+        sudo apt-get update
+        sudo apt-get install -y ${dpkg_packages[*]}
+        [[ "${?}" -ne "0" ]] && error_msg "Failed to install dependencies."
+    fi
+}
+
+# Synchronize all service scripts
+sync_config() {
+    echo -e "${STEPS} Syncing all service scripts..."
+
+    # Get the latest scripts
+    echo -e "${INFO} Downloading latest scripts..."
+    git_tmp_path="$(mktemp -d)"
+    cd ${git_tmp_path}
+    git init --quiet
+    git remote add origin ${script_repo}
+    git config core.sparseCheckout true
+    echo "${script_dir}/*" >>.git/info/sparse-checkout
+    git pull --quiet --depth=1 origin main
+    [[ "${?}" -ne "0" ]] && error_msg "Failed to download scripts from [ ${script_repo} ]."
+
+    # Update service scripts
+    echo -e "${STEPS} Syncing service scripts..."
+    [[ -d "${sbin_path}" ]] || mkdir -p ${sbin_path}
+    cp -af --no-preserve=ownership ${git_tmp_path}/${script_dir}/common-files${sbin_path}/* ${sbin_path}
+    [[ "${?}" -ne "0" ]] && error_msg "Failed to sync service scripts to [ ${sbin_path} ]."
+    chmod +x ${sbin_path}/fnnas-*
+
+    # Sync whitelisted etc files (fixes such as the resize-rootfs ExecStart override
+    # can't reach deployed devices through /usr/sbin alone)
+    echo -e "${STEPS} Syncing etc service files..."
+    etc_files=(
+        "etc/custom_service/start_service.sh"
+        "etc/systemd/system/resize-rootfs.service"
+        "etc/systemd/system/resize-rootfs.service.d/override.conf"
+        "etc/systemd/system/serial-getty@ttyAMA0.service.d/override.conf"
+    )
+    for etc_file in "${etc_files[@]}"; do
+        [[ -f "${git_tmp_path}/${script_dir}/common-files/${etc_file}" ]] || continue
+        mkdir -p "/$(dirname "${etc_file}")"
+        cp -af --no-preserve=ownership "${git_tmp_path}/${script_dir}/common-files/${etc_file}" "/${etc_file}"
+        echo -e "${INFO} Synced [ /${etc_file} ]"
+    done
+    chmod +x /etc/custom_service/start_service.sh 2>/dev/null
+    systemctl daemon-reload >/dev/null 2>&1
+
+    # Clean up temporary files
+    rm -rf ${git_tmp_path} 2>/dev/null
+
+    sync && sleep 3
+    echo -e "${SUCCESS} All service scripts synchronized successfully."
+    exit 0
+}
+
+# Check the config file
+check_release
+# Check dependencies
+check_depends
+# Synchronize all service scripts
+sync_config

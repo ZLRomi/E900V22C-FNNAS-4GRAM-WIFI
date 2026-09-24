@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           # fork 必须是公开可读的
-          DTB_URL="https://raw.githubusercontent.com/${PATCH_REPO}/${PATCH_REF}/${DTB_IN_FORK}"
+          DTB_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/${DTB_IN_FORK}"
           curl -fsSL "$DTB_URL" -o /tmp/check.dtb
           echo "--- fork 里的 dtb ---"
           ls -la /tmp/check.dtb
@@ -93,7 +93,7 @@ jobs:
           echo "--- fork 里的 WiFi 驱动 ---"
           KO_DIR="make-fnnas/fnnas-files/different-files/e900v22c/rootfs/lib/modules/${KERNEL_VERSION}-trim/extra"
           for ko in sprdwl_ng.ko uwe5621_bsp_sdio.ko; do
-            curl -fsSL "https://raw.githubusercontent.com/${PATCH_REPO}/${PATCH_REF}/${KO_DIR}/${ko}" -o "/tmp/$ko" \
+            curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/${KO_DIR}/${ko}" -o "/tmp/$ko" \
               || { echo "::error::fork 里缺 $ko"; exit 1; }
             printf "  %-24s %8s B  vermagic=%s\n" "$ko" "$(stat -c%s /tmp/$ko)" "$(modinfo -F vermagic /tmp/$ko 2>/dev/null)"
             modinfo -F vermagic "/tmp/$ko" | grep -q "6.12.41-trim" \
@@ -101,7 +101,7 @@ jobs:
           done
 
           echo "--- fork 里的生产版安装脚本 ---"
-          FI_URL="https://raw.githubusercontent.com/${PATCH_REPO}/${PATCH_REF}/make-fnnas/fnnas-files/platform-files/amlogic/rootfs/usr/sbin/fnnas-install"
+          FI_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/make-fnnas/fnnas-files/platform-files/amlogic/rootfs/usr/sbin/fnnas-install"
           curl -fsSL "$FI_URL" -o /tmp/fnnas-install
           grep -c '4G-PROD' /tmp/fnnas-install | sed 's/^/  4G-PROD 标记数: /'
           grep -q '4G-PROD' /tmp/fnnas-install || { echo "::error::不是生产版安装脚本"; exit 1; }
@@ -130,7 +130,7 @@ jobs:
 
       - name: 构建镜像（调用 ZLRomi/fnnas 的构建流程）
         id: mkb
-        uses: ZLRomi/fnnas@main
+        uses: ./
         with:
           build_target: 'fnnas'
           fnnas_path: ${{ steps.base.outputs.url }}
@@ -198,7 +198,7 @@ jobs:
           IMG_OUT="fnnas_${BOARD}_s905l3a_e900v22c-4g-wifi_k${KERNEL_VERSION}_$(date +%Y.%m.%d).img.xz"
           cp -f "$IMG" "$IMG_OUT"
           # 第二个附件：与镜像内完全一致的 dtb（从 fork 拉，保证同源）
-          curl -fsSL "https://raw.githubusercontent.com/${PATCH_REPO}/${PATCH_REF}/${DTB_IN_FORK}" -o "$DTB_NAME"
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/${DTB_IN_FORK}" -o "$DTB_NAME"
           ls -lh "$IMG_OUT" "$DTB_NAME"
           echo "img_out=$IMG_OUT" >> $GITHUB_OUTPUT
           echo "IMG_OUT=$IMG_OUT" >> $GITHUB_ENV
