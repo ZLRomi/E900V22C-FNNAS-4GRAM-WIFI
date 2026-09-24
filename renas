@@ -1189,8 +1189,14 @@ clean_tmp() {
     losetup -d "${loop_new}" 2>/dev/null
 
     cd "${out_path}"
-    # Compress the FnNAS image file. Prefer pigz when available; otherwise fall back to gzip.
-    if command -v pigz >/dev/null 2>&1; then
+    # Compress the FnNAS image file with xz (multi-threaded, level 3).
+    # Upstream renas used pigz/gzip here, which produced .img.gz; xz keeps the
+    # upstream .img.xz naming, is smaller, and -3 keeps the build fast.
+    if command -v xz >/dev/null 2>&1; then
+        echo -e "${INFO} Compressing with xz -3 (multi-threaded): $(basename ${fnnas_filename}).xz"
+        xz -T0 -3 -f "${fnnas_filename}"
+        echo -e "${SUCCESS} Compressed: $(basename ${fnnas_filename}).xz ($(du -h "${fnnas_filename}.xz" | cut -f1))"
+    elif command -v pigz >/dev/null 2>&1; then
         pigz -qf "${fnnas_filename}"
     else
         gzip -qf "${fnnas_filename}"
