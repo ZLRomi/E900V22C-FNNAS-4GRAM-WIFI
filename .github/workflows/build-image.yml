@@ -253,7 +253,7 @@ jobs:
             echo "1. balenaEtcher 写入 U 盘 / TF 卡"
             echo "2. 插到盒子开机（网线 + WiFi 都会自动连）"
             echo "3. 浏览器打开 \`http://<盒子IP>:5666\` 进入飞牛"
-            echo "4. 想摆脱 U 盘：\`sudo fnnas-install -y\`（自动装到 eMMC）"
+            echo "4. 想摆脱 U 盘：\`sudo fnnas-install\`（自动装到 eMMC）"
             echo ""
             echo "> 内存边界必须保持 0xf5700000。改成 0xfe000000（3.97G）看似多 143MiB，"
             echo "> 但内核 CMA 会压到 BL31/TEE 安全区上，安装大文件时核心进程会猝死。"
