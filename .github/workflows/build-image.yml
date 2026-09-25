@@ -218,7 +218,7 @@ jobs:
             echo "::error::缺少动态加载器 /usr/lib/ld-linux-aarch64.so.1"; fail=1
           fi
 
-          MODDIR="/mnt/vroot/usr/lib/modules/${KERNEL_VERSION}/extra"
+          MODDIR="/mnt/vroot/usr/lib/modules/${KERNEL_VERSION}-trim/extra"
           for k in sprdwl_ng.ko uwe5621_bsp_sdio.ko; do
             if sudo test -f "$MODDIR/$k"; then
               echo "✓ WiFi 驱动 $k ($(sudo stat -c%s "$MODDIR/$k" 2>/dev/null) B)"
@@ -226,7 +226,7 @@ jobs:
               echo "::error::缺少 WiFi 驱动 $MODDIR/$k"; fail=1
             fi
           done
-          if sudo test -d /mnt/vroot/lib; then
+          if test -e /mnt/vroot/lib && ! test -L /mnt/vroot/lib; then
             echo "::error::/lib 被创建成了真实目录（overlay 路径写错了）"
             sudo ls -la /mnt/vroot/lib | head -10
             fail=1
