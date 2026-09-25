@@ -126,6 +126,13 @@ jobs:
           grep -q 'fnnas-update guard installed' /tmp/rc.local || { echo "::error::rc.local 未装 guard 安装钩"; exit 1; }
           bash -n /tmp/rc.local || { echo "::error::rc.local 语法错误"; exit 1; }
           echo "  ✓ rc.local 钩子在位"
+          echo "--- fork 里的服务 mask（必须为指向 /dev/null 的软链）---"
+          for m in serial-getty@ttyAMA0.service exim4.service; do
+            P="make-fnnas/fnnas-files/different-files/e900v22c/rootfs/etc/systemd/system/$m"
+            [ -L "$P" ] || { echo "::error::$P 不是软链（mask 失效）"; exit 1; }
+            [ "$(readlink "$P")" = "/dev/null" ] || { echo "::error::$P 未指向 /dev/null"; exit 1; }
+            echo "  ✓ mask $m -> /dev/null"
+          done
           echo "✓ 守门全部通过"
 
       - name: 解析基础镜像地址
@@ -265,6 +272,13 @@ jobs:
           else
             echo "::error::rc.local 缺 guard 安装钩"; fail=1
           fi
+          for m in serial-getty@ttyAMA0.service exim4.service; do
+            if sudo test -L "/mnt/vroot/etc/systemd/system/$m"; then
+              echo "✓ 已 mask $m"
+            else
+              echo "::error::缺少 mask $m"; fail=1
+            fi
+          done
           sudo umount /mnt/vroot || true
           sudo losetup -d "$LOOP" || true
           echo "::endgroup::"
