@@ -1,3 +1,47 @@
+# E900V22C（S905L3A）4G 运存 + WiFi 构建分支说明
+
+> 本仓库是 `ophub/fnnas` 的单机型构建分支：只构建创维 **E900V22C（S905L3A）**，
+> 其它机型的通用说明见下方上游文档。本分支每次 Release 只有 **2 个附件**。
+
+## 本分支产出（Release）
+
+| 文件 | 用途 |
+|---|---|
+| `fnnas_amlogic_e900v22c_k6.12.41_<日期>.img.xz` | 系统镜像（约 1.57GB），用 balenaEtcher 整盘写入 U 盘 / TF 卡（≥16GB） |
+| `meson-g12a-s905l3a-e900v22c.dtb` | 4G 运存 dtb，也可单独替换到已装系统的 `/boot/dtb/amlogic/` |
+
+## 相对官方镜像的定制
+
+| 项目 | 本分支 |
+|---|---|
+| 运存 | 3927MiB 可用，内存边界 `0xf5700000`（顶部 169MiB 留给 BL31/TEE，**勿改** `0xfe000000`，否则大文件拷贝压坏安全区） |
+| 内核 | 锁定 `6.12.41-trim`（WiFi 驱动 `vermagic` 绑定此版本，换内核即断 WiFi） |
+| WiFi | 板载紫光展锐 UWE5621DS：`sprdwl_ng.ko` / `uwe5621_bsp_sdio.ko`（已打 `dev_addr` + `conn-leak` 双补丁）+ dtb `wifi@1` 节点 + `cap-sdio-irq` + 32k 时钟 |
+| eMMC | 降到 DDR52 50MHz 时钟（规避 HS200 写通道不稳定），读约 81MB/s / 写约 70MB/s |
+| 安装脚本 | 生产版 `fnnas-install`：无机型选择、沿用当前运行 dtb、仅允许 4G 边界安装、自带内存保护与拷贝校验 |
+| 上报板型 | `/etc/device_info/boot_board` 为 `e900v22c` |
+
+## 装机步骤
+
+1. balenaEtcher 写入 U 盘 / TF 卡，插盒开机（网线、WiFi 都会自动连）。
+2. 浏览器打开 `http://<盒子IP>:5666`，创建管理员账号。
+3. （可选）摆脱 U 盘：`sudo fnnas-install -y` 全自动装到 eMMC。
+
+## 在线更新规则
+
+* 飞牛 Web 的 trim 应用更新：**可以点**（只替换 `/usr/trim`，不影响 4G/WiFi）。
+* `apt update && apt upgrade`：**可以跑**（官方源里没有本内核）。
+* `fnnas-update` 内核更新：**默认被拦截**（追新内核会覆盖 4G dtb 并使驱动失效）。同版本重装用 `fnnas-update -k 6.12.41`；
+  强行需加 `--force-kernel-ota`，后果自负，事后需重刷本分支镜像。
+
+## 已知限制
+
+* 5G 建议走 2.4G（法规域限制，见飞牛界面说明）；WiFi 连接配好后不要反复断开重连（驱动缺陷，需重启恢复）。
+* 构建入口：Actions → Build Image and 4G DTB → Run workflow（或推 `e900v22c-*` tag），单机型约 11 分钟，CI 内含
+  `/bin|/sbin|/lib` 软链、动态加载器、驱动、`0xf5700000` 阻断式门禁。
+
+---
+
 <div align="center">
     <img src="https://github.com/user-attachments/assets/c48d1b9c-e1d9-43a6-b5a5-69c0bdb2ff3b" alt="FnNAS" />
 </div>

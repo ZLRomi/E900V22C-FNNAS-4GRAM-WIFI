@@ -1,3 +1,51 @@
+# E900V22C (S905L3A) 4G RAM + WiFi Build Notes
+
+> This repo is a single-board build branch of `ophub/fnnas` for the Skyworth
+> **E900V22C (S905L3A)** only. Generic docs for other boards follow below.
+> Every Release carries exactly **2 attached files**.
+
+## Release artifacts
+
+| File | Purpose |
+|---|---|
+| `fnnas_amlogic_e900v22c_k6.12.41_<date>.img.xz` | System image (about 1.57GB); flash to USB stick / TF card (16GB+) with balenaEtcher |
+| `meson-g12a-s905l3a-e900v22c.dtb` | 4G RAM dtb; can also replace the same file under `/boot/dtb/amlogic/` on an installed system |
+
+## What differs from stock images
+
+| Item | This branch |
+|---|---|
+| RAM | 3927MiB usable, memory boundary `0xf5700000` (top 169MiB reserved for BL31/TEE; **never** change it to `0xfe000000`, or heavy copies will corrupt the secure world) |
+| Kernel | Pinned to `6.12.41-trim` (WiFi driver `vermagic` is bound to it; any other kernel kills WiFi) |
+| WiFi | Onboard Unisoc UWE5621DS: `sprdwl_ng.ko` / `uwe5621_bsp_sdio.ko` (with `dev_addr` + `conn-leak` patches) plus `wifi@1` node, `cap-sdio-irq`, 32k clock in dtb |
+| eMMC | Downgraded to DDR52 50MHz clock (avoids broken HS200 write path); about 81MB/s read, 70MB/s write |
+| Installer | Production `fnnas-install`: no board menu, reuses the running dtb, 4G-layout only, memory guard plus copy checks |
+| Board telemetry | `/etc/device_info/boot_board` reports `e900v22c` |
+
+## Install
+
+1. Flash USB / TF with balenaEtcher, plug into the box and power on (Ethernet and WiFi connect automatically).
+2. Open `http://<box-IP>:5666` in a browser and create the admin account.
+3. (Optional) Move off USB: `sudo fnnas-install -y` installs to eMMC unattended.
+
+## Online update policy
+
+* Trim app update from the FnNAS web UI: **safe to apply** (only replaces `/usr/trim`, keeps 4G/WiFi intact).
+* `apt update && apt upgrade`: **safe** (stock repos carry no custom kernel).
+* `fnnas-update` kernel update: **blocked by default** (a newer kernel would overwrite the 4G dtb and invalidate the drivers).
+  Reinstall of the same version is allowed with `fnnas-update -k 6.12.41`; forcing anything else
+  needs `--force-kernel-ota` at your own risk, then re-flash this branch image.
+
+## Known limits
+
+* Prefer 2.4G WiFi (regulatory-domain limits on 5G); once connected, do not flap the connection
+  (driver flaw, needs a reboot to recover).
+* Build entry: Actions -> Build Image and 4G DTB -> Run workflow (or push an `e900v22c-*` tag),
+  single board, about 11 minutes, with blocking CI gates on `/bin|/sbin|/lib` symlinks,
+  dynamic loader, drivers and `0xf5700000`.
+
+---
+
 <div align="center">
     <img src="https://github.com/user-attachments/assets/ea86c39b-4ed6-4f14-b7e6-bc551b495e39" alt="FnNAS" />
 </div>
