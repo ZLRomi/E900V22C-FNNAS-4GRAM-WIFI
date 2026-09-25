@@ -27,6 +27,17 @@ if [ -d "${_moddir}" ]; then
     /sbin/depmod -a >/dev/null 2>&1 || depmod -a >/dev/null 2>&1 || true
 fi
 
+# 内核 OTA 拦截（e900v22c 专用，幂等，只装一次）
+# fnnas-update 默认追最新内核，会覆盖 4G dtb 并使 WiFi vermagic 失效；
+# 飞牛 Web 的 trim 应用更新不受影响。拦截器源码见
+# /usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh（同版本 -k 6.12.41 放行）。
+if [ -f /usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh ] && [ -f /usr/sbin/fnnas-update ] && [ ! -f /usr/sbin/fnnas-update.real ]; then
+    mv /usr/sbin/fnnas-update /usr/sbin/fnnas-update.real 2>/dev/null || true
+    install -m 0755 /usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh /usr/sbin/fnnas-update 2>/dev/null \
+        || { cp -f /usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh /usr/sbin/fnnas-update 2>/dev/null || true; chmod 0755 /usr/sbin/fnnas-update 2>/dev/null || true; }
+    logger -t e900v22c "fnnas-update guard installed" 2>/dev/null || true
+fi
+
 # FnNAS / ophub 的设备相关初始化（务必最后执行，不能被前面的错误挡住）
 [[ -x "/etc/custom_service/start_service.sh" ]] && bash /etc/custom_service/start_service.sh &
 

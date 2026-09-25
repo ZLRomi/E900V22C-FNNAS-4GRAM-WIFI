@@ -110,6 +110,22 @@ jobs:
           curl -fsSL "$FI_URL" -o /tmp/fnnas-install
           grep -c '4G-PROD' /tmp/fnnas-install | sed 's/^/  4G-PROD 标记数: /'
           grep -q '4G-PROD' /tmp/fnnas-install || { echo "::error::不是生产版安装脚本"; exit 1; }
+
+          echo "--- fork 里的 OTA 防护（e900v22c 专用）---"
+          BB_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/make-fnnas/fnnas-files/different-files/e900v22c/rootfs/etc/device_info/boot_board"
+          curl -fsSL "$BB_URL" -o /tmp/boot_board || { echo "::error::fork 里缺 etc/device_info/boot_board"; exit 1; }
+          grep -q '^e900v22c$' /tmp/boot_board || { echo "::error::boot_board 必须恰为 e900v22c"; exit 1; }
+          echo "  ✓ boot_board = e900v22c"
+          GW_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/make-fnnas/fnnas-files/different-files/e900v22c/rootfs/usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh"
+          curl -fsSL "$GW_URL" -o /tmp/fnnas-update-wrapper.sh || { echo "::error::fork 里缺 fnnas-update-wrapper.sh"; exit 1; }
+          bash -n /tmp/fnnas-update-wrapper.sh || { echo "::error::wrapper 语法错误"; exit 1; }
+          grep -q 'fnnas-update.real' /tmp/fnnas-update-wrapper.sh || { echo "::error::wrapper 未引用 .real 备份"; exit 1; }
+          echo "  ✓ kernel-OTA guard 在位"
+          RC_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/make-fnnas/fnnas-files/common-files/etc/rc.local"
+          curl -fsSL "$RC_URL" -o /tmp/rc.local
+          grep -q 'fnnas-update guard installed' /tmp/rc.local || { echo "::error::rc.local 未装 guard 安装钩"; exit 1; }
+          bash -n /tmp/rc.local || { echo "::error::rc.local 语法错误"; exit 1; }
+          echo "  ✓ rc.local 钩子在位"
           echo "✓ 守门全部通过"
 
       - name: 解析基础镜像地址
@@ -234,6 +250,21 @@ jobs:
           echo "  内核版本目录: $(ls /mnt/vroot/usr/lib/modules/ 2>/dev/null | tr '\n' ' ')"
           echo "  fnnas-install 4G-PROD 标记: $(sudo grep -c '4G-PROD' /mnt/vroot/usr/sbin/fnnas-install 2>/dev/null || echo 0)"
           echo "  已 enable 服务: $(sudo ls /mnt/vroot/etc/systemd/system/multi-user.target.wants/ 2>/dev/null | tr '\n' ' ')"
+          if sudo test "$(sudo cat /mnt/vroot/etc/device_info/boot_board 2>/dev/null)" = "e900v22c"; then
+            echo "✓ OTA 上报板型 /etc/device_info/boot_board = e900v22c"
+          else
+            echo "::error::/etc/device_info/boot_board 不是 e900v22c（OTA 上报错乱）"; fail=1
+          fi
+          if sudo test -f /mnt/vroot/usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh; then
+            echo "✓ 内核 OTA 拦截器在位 ($(sudo stat -c%s /mnt/vroot/usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh 2>/dev/null) B)"
+          else
+            echo "::error::缺少内核 OTA 拦截器"; fail=1
+          fi
+          if sudo grep -q 'fnnas-update guard installed' /mnt/vroot/etc/rc.local 2>/dev/null; then
+            echo "✓ rc.local 含 guard 安装钩"
+          else
+            echo "::error::rc.local 缺 guard 安装钩"; fail=1
+          fi
           sudo umount /mnt/vroot || true
           sudo losetup -d "$LOOP" || true
           echo "::endgroup::"
