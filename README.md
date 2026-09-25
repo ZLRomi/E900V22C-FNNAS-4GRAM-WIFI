@@ -1,5 +1,7 @@
 # E900V22C (S905L3A) 4G RAM + WiFi Modded Build
 
+[中文说明](README.cn.md)
+
 > This repo is a modded FnNAS build made exclusively for the Skyworth
 > **E900V22C (S905L3A, 4GB RAM)**. Based on `ophub/fnnas`, single board
 > (`e900v22c`) only. Every Release carries exactly **2 attached files**.

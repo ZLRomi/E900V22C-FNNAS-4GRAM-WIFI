@@ -1,5 +1,7 @@
 # E900V22C（S905L3A）4G 运存 + WiFi 魔改版
 
+[English Instructions](README.md)
+
 > 本仓库专门给创维 **E900V22C（S905L3A，4G 运存）** 跑飞牛 FnNAS 用的魔改构建。
 > 基于 `ophub/fnnas`，只构建 `e900v22c` 单机型。每次 Release 只有 **2 个附件**。
 
