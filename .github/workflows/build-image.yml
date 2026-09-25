@@ -280,7 +280,16 @@ jobs:
         run: |
           set -euo pipefail
           IMG="${{ steps.check.outputs.img }}"
-          IMG_BASE="$(basename "$IMG")"
+          # 文件名带构建号保证唯一：同一天多次构建不再重名，
+          # 否则连下两个 Release 会被下载器/解压软件自动改成 _2/(1)，还得手工改名
+          IMG_FILE="$(basename "$IMG")"
+          case "$IMG_FILE" in
+            *.img.xz)  SUF="img.xz"; STEM="${IMG_FILE%.img.xz}" ;;
+            *.img.gz)  SUF="img.gz"; STEM="${IMG_FILE%.img.gz}" ;;
+            *.img.zst) SUF="img.zst"; STEM="${IMG_FILE%.img.zst}" ;;
+            *)         SUF="img";     STEM="${IMG_FILE%.img}" ;;
+          esac
+          IMG_BASE="${STEM}.r${{ github.run_number }}.${SUF}"
           cp -f "$IMG" "$IMG_BASE"
           # 第二个附件：与镜像同源的 4G dtb
           curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/${DTB_IN_FORK}" -o "$DTB_NAME"

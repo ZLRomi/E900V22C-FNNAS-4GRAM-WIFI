@@ -35,7 +35,7 @@
 
 | 文件 | 用途 |
 |---|---|
-| `fnnas_amlogic_e900v22c_k6.12.41_<日期>.img.xz` | 系统镜像（约 1.6GB），balenaEtcher 整盘写入 U 盘 / TF 卡（≥16GB） |
+| `fnnas_amlogic_e900v22c_k6.12.41_<日期>.r<构建号>.img.xz` | 系统镜像（约 1.6GB），balenaEtcher 整盘写入 U 盘 / TF 卡（≥16GB）。`r` 后数字为构建号，保证每次发布文件名唯一，解压即得同名 `.img`，无需改名 |
 | `meson-g12a-s905l3a-e900v22c.dtb` | 4G dtb，可单独替换到已装系统的 `/boot/dtb/amlogic/` |
 
 ## 三、装机步骤

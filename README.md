@@ -39,7 +39,7 @@ Unisoc UWE5621DS, shipped with dual modules plus four dtb fixes:
 
 | File | Purpose |
 |---|---|
-| `fnnas_amlogic_e900v22c_k6.12.41_<date>.img.xz` | System image (about 1.6GB); flash to USB / TF card (16GB+) with balenaEtcher |
+| `fnnas_amlogic_e900v22c_k6.12.41_<date>.r<build>.img.xz` | System image (about 1.6GB); flash to USB / TF card (16GB+) with balenaEtcher. The `r` number is the build number keeping every release filename unique; it extracts to the same-named `.img`, no rename needed |
 | `meson-g12a-s905l3a-e900v22c.dtb` | 4G dtb; can also replace the same file under `/boot/dtb/amlogic/` on an installed system |
 
 ## 3. Install
