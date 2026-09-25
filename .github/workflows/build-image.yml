@@ -2,17 +2,15 @@ name: Build Image and 4G DTB
 
 # ============================================================================
 # 产出（Release 里只有这 2 个附件）：
-#   1. fnnas_amlogic_s905l3a_e900v22c-4g-wifi_k6.12.41_<日期>.img.xz
+#   1. fnnas_amlogic_s905l3a_e900v22c-4g_k6.18.18_<日期>.img.xz
 #   2. meson-g12a-s905l3a-e900v22c.dtb            （4G 运存 dtb）
 #
 # 分工：
 #   · 构建逻辑在 ZLRomi/fnnas（ophub/fnnas 的 fork）
-#       - different-files/e900v22c/    4G dtb + UWE5621DS WiFi 驱动 + 配置 + 服务 enable
+#       - different-files/e900v22c/    4G dtb + 配置 + 服务 enable（无 WiFi ko，需用户自行编译）
 #       - platform-files/amlogic/      生产版 fnnas-install
-#   · 本仓库只负责触发构建 + 发布 Release，所以镜像永远与本仓库的 4G/WiFi 修复一致
-#
-# ⚠ 内核锁 6.12.41：WiFi 驱动 vermagic = 6.12.41-trim，
-#   内核不是 6.12.41 的话 insmod 会直接拒绝（WiFi 失效）。
+#   · 本仓库只负责触发构建 + 发布 Release，所以镜像永远与本仓库的 4G 修复一致
+# ⚠ 内核锁 6.18.18：6.18 系列内核，WiFi 驱动需用户自行对 6.18 编译（原 6.12 ko 不兼容）。
 #   renas 只在 auto_kernel=false 时才原样使用 -k 指定的版本，故两者都要写死。
 # ============================================================================
 
@@ -41,7 +39,7 @@ permissions:
 env:
   # 构建链已并入本仓库，用仓库自身（uses: ./）
   SELF_REF: 'main'
-  KERNEL_VERSION: '6.12.41'
+  KERNEL_VERSION: '6.18.18'
   BOARD: 'amlogic'
   DTB_NAME: 'meson-g12a-s905l3a-e900v22c.dtb'
   DTB_IN_FORK: 'make-fnnas/fnnas-files/different-files/e900v22c/bootfs/dtb/amlogic/meson-g12a-s905l3a-e900v22c.dtb'
@@ -95,16 +93,6 @@ jobs:
             || { echo "::error::fork 里的 dtb 内存边界不是 0xf5700000（4G 安全值）"; exit 1; }
           echo "✓ dtb 正确"
 
-          echo "--- fork 里的 WiFi 驱动 ---"
-          KO_DIR="make-fnnas/fnnas-files/different-files/e900v22c/rootfs/usr/lib/modules/${KERNEL_VERSION}-trim/extra"
-          for ko in sprdwl_ng.ko uwe5621_bsp_sdio.ko; do
-            curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/${KO_DIR}/${ko}" -o "/tmp/$ko" \
-              || { echo "::error::fork 里缺 $ko"; exit 1; }
-            printf "  %-24s %8s B  vermagic=%s\n" "$ko" "$(stat -c%s /tmp/$ko)" "$(modinfo -F vermagic /tmp/$ko 2>/dev/null)"
-            modinfo -F vermagic "/tmp/$ko" | grep -q "6.12.41-trim" \
-              || { echo "::error::$ko vermagic 不匹配"; exit 1; }
-          done
-
           echo "--- fork 里的生产版安装脚本 ---"
           FI_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/make-fnnas/fnnas-files/platform-files/amlogic/rootfs/usr/sbin/fnnas-install"
           curl -fsSL "$FI_URL" -o /tmp/fnnas-install
@@ -120,6 +108,7 @@ jobs:
           curl -fsSL "$GW_URL" -o /tmp/fnnas-update-wrapper.sh || { echo "::error::fork 里缺 fnnas-update-wrapper.sh"; exit 1; }
           bash -n /tmp/fnnas-update-wrapper.sh || { echo "::error::wrapper 语法错误"; exit 1; }
           grep -q 'fnnas-update.real' /tmp/fnnas-update-wrapper.sh || { echo "::error::wrapper 未引用 .real 备份"; exit 1; }
+          grep -q 'PIN_PREFIX="\$(uname -r' /tmp/fnnas-update-wrapper.sh || { echo "::error::wrapper 未用动态 PIN_PREFIX (uname -r)"; exit 1; }
           echo "  ✓ kernel-OTA guard 在位"
           RC_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/make-fnnas/fnnas-files/common-files/etc/rc.local"
           curl -fsSL "$RC_URL" -o /tmp/rc.local
@@ -136,26 +125,35 @@ jobs:
           done
           echo "✓ 守门全部通过"
 
-      - name: 解析基础镜像地址
+- name: 解析基础镜像地址
         id: base
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          VER="${{ inputs.base_version }}"
-          [ -n "$VER" ] || VER="amlogic_1252"
+          # 优先用本仓库 Release 里的基础镜像（base-1.2.0302），没有则回退 ophub
           URL=$(curl -s \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/ophub/fnnas/releases?per_page=30" \
-            | jq -r --arg B "$VER" \
-                '[.[] | select(.tag_name | contains("fnnas_base_image"))]
-                 | map(.assets[] | select(.name | contains($B) and endswith(".img.xz")))
-                 | sort_by(.updated_at) | reverse | .[0].browser_download_url')
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/base-1.2.0302" \
+            | jq -r '.assets[] | select(.name | contains("fnos-1.2.0302-oes-plus-base") and endswith(".img.gz")) | .browser_download_url' | head -1)
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "本仓库无基础镜像，回退 ophub..."
+            VER="${{ inputs.base_version }}"
+            [ -n "$VER" ] || VER="amlogic_1252"
+            URL=$(curl -s \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/ophub/fnnas/releases?per_page=30" \
+              | jq -r --arg B "$VER" \
+                  '[.[] | select(.tag_name | contains("fnnas_base_image"))]
+                   | map(.assets[] | select(.name | contains($B) and endswith(".img.gz")))
+                   | sort_by(.updated_at) | reverse | .[0].browser_download_url')
+          fi
           [ -n "$URL" ] && [ "$URL" != "null" ] || { echo "::error::解析基础镜像失败"; exit 1; }
           echo "基础镜像: $URL"
           echo "url=$URL" >> $GITHUB_OUTPUT
-          echo "ver=$VER" >> $GITHUB_OUTPUT
+          echo "ver=base-1.2.0302" >> $GITHUB_OUTPUT
 
       - name: 构建镜像（调用 ZLRomi/fnnas 的构建流程）
         id: mkb
@@ -165,11 +163,11 @@ jobs:
           fnnas_path: ${{ steps.base.outputs.url }}
           fnnas_board: e900v22c
           kernel_repo: ophub/fnnas
-          fnnas_kernel: '6.12.41'
+          fnnas_kernel: '6.18.18'
           auto_kernel: 'false'
           fnnas_size: '512/4096'
           rootfs_expand: '16'
-          builder_name: 'e900v22c-4g-wifi'
+          builder_name: 'e900v22c-4g'
 
       - name: 定位构建产物
         id: check
@@ -242,14 +240,13 @@ jobs:
             echo "::error::缺少动态加载器 /usr/lib/ld-linux-aarch64.so.1"; fail=1
           fi
 
-          MODDIR="/mnt/vroot/usr/lib/modules/${KERNEL_VERSION}-trim/extra"
-          for k in sprdwl_ng.ko uwe5621_bsp_sdio.ko; do
-            if sudo test -f "$MODDIR/$k"; then
-              echo "✓ WiFi 驱动 $k ($(sudo stat -c%s "$MODDIR/$k" 2>/dev/null) B)"
-            else
-              echo "::error::缺少 WiFi 驱动 $MODDIR/$k"; fail=1
-            fi
-          done
+          MODDIR="/mnt/vroot/usr/lib/modules/${KERNEL_VERSION}.c944-trim/extra"
+          # WiFi ko 已移除（1.2 线用户自行编译 6.18 ko），此处不再检查
+          # if sudo test -f "$MODDIR/$k"; then
+          #   echo "✓ WiFi 驱动 $k ($(sudo stat -c%s "$MODDIR/$k" 2>/dev/null) B)"
+          # else
+          #   echo "::error::缺少 WiFi 驱动 $MODDIR/$k"; fail=1
+          # fi
           if test -e /mnt/vroot/lib && ! test -L /mnt/vroot/lib; then
             echo "::error::/lib 被创建成了真实目录（overlay 路径写错了）"
             sudo ls -la /mnt/vroot/lib | head -10
@@ -280,6 +277,12 @@ jobs:
               echo "::error::缺少 mask $m"; fail=1
             fi
           done
+          if sudo test -f /mnt/vroot/usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh; then
+            grep -q 'PIN_PREFIX="\$(uname -r' /mnt/vroot/usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh || { echo "::error::镜像内 wrapper 未用动态 PIN_PREFIX"; fail=1; }
+            echo "✓ 内核 OTA 拦截器动态 PIN 正确"
+          else
+            echo "::error::缺少内核 OTA 拦截器"; fail=1
+          fi
           sudo umount /mnt/vroot || true
           sudo losetup -d "$LOOP" || true
           echo "::endgroup::"
@@ -316,14 +319,14 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "## E900V22C (S905L3A) FnNAS 4G 运存 + WiFi"
+            echo "## E900V22C (S905L3A) FnNAS 4G 运存"
             echo ""
             echo "| 项目 | 值 |"
             echo "|---|---|"
             echo "| 机型 | 创维 E900V22C / S905L3A（4G 运存） |"
-            echo "| 内核 | ${KERNEL_VERSION}-trim |"
+            echo "| 内核 | ${KERNEL_VERSION}.c944-trim |"
             echo "| 内存 | 3927 MiB 可用（边界 0xf5700000，顶部 169MiB 留给 BL31/TEE 安全区） |"
-            echo "| WiFi | 紫光展锐 UWE5621DS（dev_addr + conn-leak 双补丁） |"
+            echo "| WiFi | 紫光展锐 UWE5621DS（需用户自行对 6.18 内核编译驱动） |"
             echo "| eMMC | DDR52 50MHz 时钟（规避 HS200 写通道不稳定） |"
             echo "| 安装脚本 | 生产版 fnnas-install：无 dtb 选择 / 仅 4G / 内存保护 |"
             echo "| 基础镜像 | ${{ steps.base.outputs.ver }} |"
@@ -365,7 +368,7 @@ jobs:
             gh release upload "$TAG" "$IMG_OUT" "$DTB_NAME" --clobber
           else
             gh release create "$TAG" "$IMG_OUT" "$DTB_NAME" \
-              --title "E900V22C 4G运存+WiFi ($TAG)" \
+              --title "E900V22C 4G运存 ($TAG)" \
               --notes-file release-notes.md
           fi
           echo "=== Release 附件 ==="
@@ -381,7 +384,7 @@ jobs:
             echo "| 项 | 值 |"
             echo "|---|---|"
             echo "| 状态 | ${{ steps.rel.outcome || '未完成' }} |"
-            echo "| 内核 | ${KERNEL_VERSION}-trim |"
+            echo "| 内核 | ${KERNEL_VERSION}.c944-trim |"
             echo "| 产物 | ${IMG_OUT:-未生成} |"
             echo "| Release | ${{ steps.rel.outputs.url }} |"
           } >> $GITHUB_STEP_SUMMARY

@@ -11,7 +11,7 @@
 #
 # By default this script does nothing.
 
-# ===== E900V22C (S905L3A) 4G RAM + WiFi =====
+# ===== E900V22C (S905L3A) 4G RAM =====
 # postgresql 未启用 -> 5666 启动慢（triminit 连库重试 122 秒）+ 依赖服务 panic 循环
 # resmon 未启用    -> 资源管理 CPU/内存显示 0
 # 注意：start 必须加 --no-block。resmon_service 的 After=rc-local.service，
@@ -24,16 +24,10 @@ for _svc in postgresql.service resmon_service.service; do
     fi
 done
 
-# WiFi 驱动：补一次 depmod，否则 modprobe 找不到模块名
-_moddir="/usr/lib/modules/${KERNEL_RELEASE:-6.12.41-trim}/extra"
-if [ -d "${_moddir}" ]; then
-    /sbin/depmod -a >/dev/null 2>&1 || depmod -a >/dev/null 2>&1 || true
-fi
-
 # 内核 OTA 拦截（e900v22c 专用，幂等，只装一次）
 # fnnas-update 默认追最新内核，会覆盖 4G dtb 并使 WiFi vermagic 失效；
 # 飞牛 Web 的 trim 应用更新不受影响。拦截器源码见
-# /usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh（同版本 -k 6.12.41 放行）。
+# /usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh（同版本 -k 放行）。
 if [ -f /usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh ] && [ -f /usr/sbin/fnnas-update ] && [ ! -f /usr/sbin/fnnas-update.real ]; then
     mv /usr/sbin/fnnas-update /usr/sbin/fnnas-update.real 2>/dev/null || true
     install -m 0755 /usr/lib/fnnas-e900v22c/fnnas-update-wrapper.sh /usr/sbin/fnnas-update 2>/dev/null \
