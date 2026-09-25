@@ -14,10 +14,13 @@
 # ===== E900V22C (S905L3A) 4G RAM + WiFi =====
 # postgresql 未启用 -> 5666 启动慢（triminit 连库重试 122 秒）+ 依赖服务 panic 循环
 # resmon 未启用    -> 资源管理 CPU/内存显示 0
+# 注意：start 必须加 --no-block。resmon_service 的 After=rc-local.service，
+# 同步 start 会形成“rc.local 等 resmon job，resmon job 等 rc.local 结束”的死锁，
+# rc.local 永不退出，trim 全家（After=rc-local）永远起不来，5666 不通。
 for _svc in postgresql.service resmon_service.service; do
     if [ -f "/lib/systemd/system/${_svc}" ] || [ -f "/etc/systemd/system/${_svc}" ]; then
         systemctl is-enabled "${_svc}" >/dev/null 2>&1 || systemctl enable "${_svc}" >/dev/null 2>&1 || true
-        systemctl is-active  "${_svc}" >/dev/null 2>&1 || systemctl start  "${_svc}" >/dev/null 2>&1 || true
+        systemctl is-active  "${_svc}" >/dev/null 2>&1 || systemctl --no-block start "${_svc}" >/dev/null 2>&1 || true
     fi
 done
 

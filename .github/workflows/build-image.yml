@@ -124,6 +124,7 @@ jobs:
           RC_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${SELF_REF}/make-fnnas/fnnas-files/common-files/etc/rc.local"
           curl -fsSL "$RC_URL" -o /tmp/rc.local
           grep -q 'fnnas-update guard installed' /tmp/rc.local || { echo "::error::rc.local 未装 guard 安装钩"; exit 1; }
+          grep -q 'systemctl --no-block start' /tmp/rc.local || { echo "::error::rc.local 缺 --no-block（会与 After=rc-local 的单元死锁，trim 起不来）"; exit 1; }
           bash -n /tmp/rc.local || { echo "::error::rc.local 语法错误"; exit 1; }
           echo "  ✓ rc.local 钩子在位"
           echo "--- fork 里的服务 mask（必须为指向 /dev/null 的软链）---"
